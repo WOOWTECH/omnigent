@@ -164,7 +164,12 @@ Other connection providers alone do not enable the managed MCP picker.
   `tests/e2e_ui/chat/test_claude_model_picker.py::test_claude_native_permission_mode_switch_persists`
 - **`managed-mcp-picker`, new-session composer:**
   `tests/e2e_ui/sessions/test_mcp_registry_connections.py::test_managed_mcp_selection_is_sent_with_launch`
-  covers host and sandbox launch on desktop and mobile. Selection persistence,
+  covers desktop sandbox and mobile local-host launches. After launch, the same
+  cases use desktop agent info and mobile **Agent info** to select managed
+  services on a builtin agent and remove unavailable references after registry
+  disablement, while custom MCP controls remain read-only. The module has four
+  browser cases: these two launches, settings sign-in routing, and the
+  Databricks sign-in launch below. Selection persistence,
   launch gating during sign-in, and an absent picker without registry enablement
   are covered in `web/src/shell/NewChatDialog.flow.test.tsx`.
 - **`managed-mcp-sign-in`, new-session composer:**
