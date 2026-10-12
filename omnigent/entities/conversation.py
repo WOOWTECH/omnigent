@@ -382,6 +382,7 @@ class FunctionCallData(BaseModel):
 
     :param agent: Agent name. Serialized as ``"model"`` in JSON.
     :param name: Tool function name, e.g. ``"search.web"``.
+    :param namespace: Optional Responses API tool namespace, e.g. ``"clock"``.
     :param arguments: JSON-encoded arguments string.
     :param call_id: Unique call identifier from the LLM,
         e.g. ``"call_abc123"``.
@@ -389,6 +390,7 @@ class FunctionCallData(BaseModel):
 
     agent: str = Field(serialization_alias="model")
     name: str
+    namespace: str | None = Field(default=None, exclude_if=lambda value: value is None)
     arguments: str
     call_id: str
 

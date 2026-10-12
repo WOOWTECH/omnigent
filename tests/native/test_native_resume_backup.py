@@ -271,6 +271,29 @@ class TestCodexResumeBackup:
         assert self.rollouts() == [written.name]
 
     @pytest.mark.asyncio
+    async def test_namespaced_function_call_keeps_its_namespace(self) -> None:
+        written = await self.resume(
+            [
+                {
+                    "id": "fc_sleep",
+                    "response_id": "resp_0",
+                    "type": "function_call",
+                    "name": "sleep",
+                    "namespace": "clock",
+                    "arguments": '{"duration_ms":1000}',
+                    "call_id": "call_sleep",
+                }
+            ]
+        )
+        records = [json.loads(line) for line in written.read_text().splitlines()]
+        function_call = next(
+            record["payload"]
+            for record in records
+            if record["type"] == "response_item" and record["payload"]["type"] == "function_call"
+        )
+        assert function_call["namespace"] == "clock"
+
+    @pytest.mark.asyncio
     async def test_unavailable_history_uses_the_local_rollout_without_a_backup(self) -> None:
         original = self.write_original()
         unavailable = codex_main._CodexResumeHistoryUnavailableError("history unavailable")

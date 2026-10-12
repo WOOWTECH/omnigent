@@ -857,8 +857,9 @@ def test_load_codex_session_normalizes_response_items(tmp_path: Path) -> None:
             "type": "response_item",
             "payload": {
                 "type": "function_call",
-                "name": "shell",
-                "arguments": '{"command":"cat TODO.md"}',
+                "name": "sleep",
+                "namespace": "clock",
+                "arguments": '{"duration_ms":1000}',
                 "call_id": "call_1",
             },
         },
@@ -926,8 +927,9 @@ def test_load_codex_session_normalizes_response_items(tmp_path: Path) -> None:
     }
     assert imported.items[2].data.model_dump() == {
         "agent": "codex-native-ui",
-        "name": "shell",
-        "arguments": '{"command":"cat TODO.md"}',
+        "name": "sleep",
+        "namespace": "clock",
+        "arguments": '{"duration_ms":1000}',
         "call_id": "call_1",
     }
     assert imported.items[3].data.model_dump() == {

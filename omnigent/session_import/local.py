@@ -922,6 +922,9 @@ def _codex_response_item(
                 "arguments": arguments,
                 "call_id": call_id,
             }
+            namespace = payload.get("namespace")
+            if isinstance(namespace, str) and namespace:
+                data["namespace"] = namespace
             normalized_type = "function_call"
     elif _str_in(item_type, {"function_call_output", "custom_tool_call_output"}):
         call_id = payload.get("call_id")
