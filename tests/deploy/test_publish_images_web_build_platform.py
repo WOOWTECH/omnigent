@@ -21,6 +21,7 @@ _COPY_FROM = re.compile(
 )
 _WEB_BUILD = re.compile(r"^RUN\b.*\bpnpm\b.*\brun build\b", re.MULTILINE)
 _BUILD_PLATFORM = re.compile(r"--platform=\$\{?BUILDPLATFORM\}?")
+_MATRIX_PLATFORMS = re.compile(r"^\$\{\{\s*matrix\.(?P<key>[\w-]+)\s*\}\}$")
 
 
 def _stages(dockerfile: str) -> list[dict]:
@@ -59,6 +60,19 @@ def _uses(step: dict, action: str) -> bool:
     return str(step.get("uses", "")).startswith(action)
 
 
+def _step_platforms(job: dict, inputs: dict, label: str) -> str:
+    """A step's platforms: a literal, or one `${{ matrix.<key> }}` resolved from the job."""
+    platforms = str(inputs.get("platforms", ""))
+    if "${{" not in platforms:
+        return platforms
+    match = _MATRIX_PLATFORMS.fullmatch(platforms.strip())
+    matrix = (job.get("strategy") or {}).get("matrix")
+    if not match or not isinstance(matrix, dict) or match["key"] not in matrix:
+        pytest.fail(f"{label}: cannot resolve platforms {platforms!r}; extend this guard")
+    values = matrix[match["key"]]
+    return ",".join(map(str, values if isinstance(values, list) else [values]))
+
+
 def test_release_image_builds_do_not_run_web_build_under_emulation() -> None:
     workflow = yaml.safe_load(_WORKFLOW.read_text())
     stages_by_file: dict[str, list[dict]] = {}
@@ -73,13 +87,7 @@ def test_release_image_builds_do_not_run_web_build_under_emulation() -> None:
                 continue
             label = f"{job_name} / {step.get('name', step['uses'])}"
             inputs = step.get("with", {})
-            platforms = str(inputs.get("platforms", ""))
-            if "${{" in platforms:
-                # Only a matrix resolves statically; anything else must fail
-                # loudly instead of silently skipping the guard.
-                assert "strategy" in job, f"{label}: cannot resolve platforms {platforms!r}"
-                platforms = str(job["strategy"])
-            if "linux/arm64" not in platforms:
+            if "linux/arm64" not in _step_platforms(job, inputs, label):
                 continue
             dockerfile = str(inputs.get("file", "Dockerfile"))
             if dockerfile not in stages_by_file:
@@ -107,3 +115,37 @@ def test_web_builder_stage_is_pinned_to_the_build_platform(dockerfile: Path) -> 
         f"{dockerfile.name}: web-builder runs the SPA build on the target platform; pin it "
         "to --platform=$BUILDPLATFORM so a cross-build never emulates it"
     )
+
+
+@pytest.mark.parametrize(
+    ("platforms", "strategy", "expected"),
+    [
+        ("linux/amd64,linux/arm64", None, "linux/amd64,linux/arm64"),
+        (
+            "${{ matrix.platform }}",
+            {"matrix": {"platform": ["linux/amd64", "linux/arm64"]}},
+            "linux/amd64,linux/arm64",
+        ),
+    ],
+)
+def test_step_platforms_resolves_literals_and_matrix_keys(
+    platforms: str, strategy: dict | None, expected: str
+) -> None:
+    job = {"strategy": strategy} if strategy else {}
+    assert _step_platforms(job, {"platforms": platforms}, "job / step") == expected
+
+
+@pytest.mark.parametrize(
+    ("platforms", "strategy"),
+    [
+        ("${{ inputs.platforms }}", {"matrix": {"platform": ["linux/arm64"]}}),
+        ("${{ matrix.platform }}", {"matrix": {"other": ["linux/arm64"]}}),
+        ("${{ matrix.platform }}", None),
+    ],
+)
+def test_step_platforms_rejects_unresolvable_expressions(
+    platforms: str, strategy: dict | None
+) -> None:
+    job = {"strategy": strategy} if strategy else {}
+    with pytest.raises(pytest.fail.Exception, match="cannot resolve platforms"):
+        _step_platforms(job, {"platforms": platforms}, "job / step")

@@ -30,10 +30,9 @@
 # arm64 hosts (Apple Silicon laptops, arm64 clusters) as well as amd64.
 # Nothing below is arch-specific: the python/node base images are
 # multi-arch and apt/pip/npm/COPY-from-node all resolve per-arch under
-# buildx. Only web-builder is pinned to the build host's platform (its
-# SPA output is arch-independent — see that stage). Amd64-only consumers
-# (Modal, Daytona, CoreWeave) keep pulling the amd64 variant from the
-# manifest list, unchanged.
+# buildx. Only web-builder is pinned to $BUILDPLATFORM (see that stage).
+# Amd64-only consumers (Modal, Daytona, CoreWeave) keep pulling the
+# amd64 variant from the manifest list, unchanged.
 #
 # Build (from repo root):
 #
