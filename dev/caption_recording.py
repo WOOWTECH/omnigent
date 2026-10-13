@@ -45,13 +45,16 @@ def probe(source: Path) -> dict[str, Any]:
             timeout=30,
         )
     )
-    video = next((s for s in info["streams"] if s["codec_type"] == "video"), None)
+    video = next((s for s in info.get("streams", []) if s.get("codec_type") == "video"), None)
     if video is None:
         raise ValueError("Source has no video stream")
+    width, height = int(video.get("width") or 0), int(video.get("height") or 0)
+    if width <= 0 or height <= 0:
+        raise ValueError("Source video must have known positive dimensions")
     duration = float(info.get("format", {}).get("duration") or video.get("duration") or 0)
     if not math.isfinite(duration) or duration <= 0:
         raise ValueError("Source must have a known positive duration")
-    return {"width": int(video["width"]), "height": int(video["height"]), "duration": duration}
+    return {"width": width, "height": height, "duration": duration}
 
 
 def validate_cues(value: Any, duration: float, columns: int) -> list[dict[str, Any]]:
@@ -81,7 +84,11 @@ def validate_cues(value: Any, duration: float, columns: int) -> list[dict[str, A
     return cues
 
 
-def caption_recording(source: Path, cues_path: Path, output: Path) -> dict[str, Any]:
+def caption_recording(
+    source: Path, cues_path: Path, output: Path, *, render_timeout: float = 600
+) -> dict[str, Any]:
+    if not math.isfinite(render_timeout) or render_timeout <= 0:
+        raise ValueError("Render timeout must be a positive finite number of seconds")
     source, cues_path, output = source.resolve(), cues_path.resolve(), output.resolve()
     if output in (source, cues_path) or output.exists():
         raise ValueError(
@@ -149,6 +156,7 @@ def caption_recording(source: Path, cues_path: Path, output: Path) -> dict[str, 
                 str(rendered),
             ],
             cwd=temporary,
+            timeout=render_timeout,
         )
         rendered_info = probe(rendered)
         if abs(rendered_info["duration"] - info["duration"]) > 0.25:
@@ -163,9 +171,18 @@ def main() -> None:
     parser.add_argument("--source", required=True, type=Path)
     parser.add_argument("--cues", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
+    parser.add_argument(
+        "--render-timeout",
+        type=float,
+        default=600,
+        help="Maximum encode time in seconds (default: 600); increase for long recordings",
+    )
     args = parser.parse_args()
     try:
-        print(json.dumps(caption_recording(args.source, args.cues, args.output), indent=2))
+        result = caption_recording(
+            args.source, args.cues, args.output, render_timeout=args.render_timeout
+        )
+        print(json.dumps(result, indent=2))
     except (OSError, ValueError, RuntimeError) as exc:
         parser.exit(1, f"Caption rendering failed: {exc}\n")
 

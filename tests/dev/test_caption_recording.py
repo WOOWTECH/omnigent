@@ -61,7 +61,12 @@ def test_existing_files_cannot_be_overwritten(tmp_path):
 
 
 def _run(command):
-    return subprocess.run(command, check=True, capture_output=True, timeout=60).stdout
+    try:
+        return subprocess.run(command, check=True, capture_output=True, timeout=60).stdout
+    except subprocess.CalledProcessError as exc:
+        raise AssertionError(
+            f"{command[0]} failed: {exc.stderr.decode(errors='replace')}"
+        ) from exc
 
 
 def _frame(path: Path, seconds: float, crop: str) -> bytes:
@@ -187,15 +192,37 @@ def test_failed_render_leaves_raw_footage_and_no_partial_output(tmp_path, monkey
     )
 
     def fail(*args, **kwargs):
+        assert kwargs["timeout"] == 900
         raise RuntimeError("drawtext unavailable")
 
     monkeypatch.setattr("dev.caption_recording.run", fail)
     output = tmp_path / "after.mp4"
     with pytest.raises(RuntimeError, match="drawtext unavailable"):
-        caption_recording(source, cues, output)
+        caption_recording(source, cues, output, render_timeout=900)
     assert source.read_bytes() == b"source"
     assert not output.exists()
     assert not list(tmp_path.glob(".caption-*"))
+
+
+@pytest.mark.parametrize("timeout", [0, -1, float("nan"), float("inf")])
+def test_unbounded_or_invalid_render_timeout_is_rejected(tmp_path, timeout):
+    with pytest.raises(ValueError, match="positive finite"):
+        caption_recording(
+            tmp_path / "raw.webm",
+            tmp_path / "cues.json",
+            tmp_path / "out.mp4",
+            render_timeout=timeout,
+        )
+
+
+@pytest.mark.parametrize(
+    "stream", [None, {}, {"width": 640}, {"height": 360}, {"width": 0, "height": 0}]
+)
+def test_unprobeable_video_reports_a_captioning_error(tmp_path, monkeypatch, stream):
+    info = {} if stream is None else {"streams": [{"codec_type": "video", **stream}]}
+    monkeypatch.setattr("dev.caption_recording.run", lambda *a, **kw: json.dumps(info))
+    with pytest.raises(ValueError, match="Source"):
+        probe(tmp_path / "broken.mp4")
 
 
 def test_media_command_timeout_is_reported(monkeypatch):

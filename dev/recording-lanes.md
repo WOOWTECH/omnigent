@@ -371,8 +371,9 @@ below the attachment; it does not replace captions visible during playback.
    Run the helper from the Omnigent tools checkout if the target repository is
    different. It pads below the original screen so captions do not cover controls
    or output, retains timing and audio, and refuses to overwrite existing files.
-   Media probes time out after 30 seconds and rendering after 10 minutes, so a
-   stalled encoder reports a captioning failure rather than blocking the agent.
+   Media probes time out after 30 seconds and rendering after 10 minutes by
+   default. For long or high-resolution clips, increase `--render-timeout`
+   (seconds); a stalled encoder still reports a bounded captioning failure.
    Always render from raw footage; choose a fresh output path when revising cues.
    Keep the raw clip, cue JSON and render command as uncommitted workspace
    evidence. Once the selected capture is under `raw/`, retain it for rerendering;
