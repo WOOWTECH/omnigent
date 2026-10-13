@@ -578,9 +578,6 @@ describe("ApprovalCard — Antigravity permission prompt details", () => {
   } as const;
 
   it("shows the action description and both persist choices when advertised", () => {
-    // agy's TUI prompt describes the action and offers two always-allow entries
-    // (conversation-scoped and persisted to settings); the card must surface
-    // all of it, not a bare Approve/Reject.
     const submitSpy = vi.fn();
     render(
       <ApprovalCard
@@ -593,11 +590,23 @@ describe("ApprovalCard — Antigravity permission prompt details", () => {
     );
 
     expect(screen.getByText("Running pwd command")).toBeDefined();
-    fireEvent.click(screen.getByTestId("approval-card-agy-session-allow"));
+    const sessionAllow = screen.getByRole("button", {
+      name: "Allow commands starting with pwd for this session",
+    });
+    expect(sessionAllow.getAttribute("title")).toBe(
+      "Ask Antigravity to allow commands starting with “pwd” for this conversation",
+    );
+    fireEvent.click(sessionAllow);
     expect(submitSpy).toHaveBeenCalledWith("elic_agy_perm", "accept", undefined, {
       persist: "session",
     });
-    fireEvent.click(screen.getByTestId("approval-card-agy-always-allow"));
+    const alwaysAllow = screen.getByRole("button", {
+      name: "Always allow commands starting with pwd",
+    });
+    expect(alwaysAllow.getAttribute("title")).toBe(
+      "Ask Antigravity to save a rule allowing commands starting with “pwd” for this Omnigent session",
+    );
+    fireEvent.click(alwaysAllow);
     expect(submitSpy).toHaveBeenCalledWith("elic_agy_perm", "accept", undefined, {
       persist: "always",
     });

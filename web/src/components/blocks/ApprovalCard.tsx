@@ -320,8 +320,7 @@ export function ApprovalCard({
     // permission update back to the PermissionRequest hook.
     submit(elicitationId, "accept", { remember: true });
   };
-  // Codex MCP and agy always-allow accepts share the same `_meta.persist`
-  // verdict shape; the server routes each to its own persistence mechanism.
+  // Codex MCP and agy persist accepts share the `_meta.persist` verdict shape.
   const submitPersist = (mode: CodexPersistMode) => {
     submit(elicitationId, "accept", undefined, { persist: mode });
   };
@@ -399,8 +398,6 @@ export function ApprovalCard({
   const acceptedAutoMode =
     response?.action === "accept" && response.content?.allow_auto_mode === true;
   const acceptedRemember = response?.content?.remember === true;
-  // Codex MCP persistence AND the agy always-allow choice both ride
-  // `_meta.persist`, so one read covers the responded-state label.
   const acceptedPersist = response?.["_meta"]?.persist;
   // Persistent "don't ask again" affordance: label by the WebFetch
   // domain when present, else the tool name. Drives the third binary
@@ -425,31 +422,37 @@ export function ApprovalCard({
           <Button
             size="sm"
             variant="outline"
+            className="h-auto max-w-full whitespace-normal text-left"
             onClick={() => submitPersist("session")}
-            title={`Ask Antigravity to allow “${agyPermission.alwaysAllowPattern}” for this conversation`}
+            title={`Ask Antigravity to allow commands starting with “${agyPermission.alwaysAllowPattern}” for this conversation`}
             data-testid="approval-card-agy-session-allow"
             componentId="approval.approve_session_agy"
           >
-            <CheckIcon className="mr-1 size-3.5" />
-            Allow{" "}
-            <code className="rounded bg-muted px-1 font-mono">
-              {agyPermission.alwaysAllowPattern}
-            </code>{" "}
-            for this session
+            <CheckIcon className="mr-1 size-3.5 shrink-0" />
+            <span className="min-w-0">
+              Allow commands starting with{" "}
+              <code className="break-all rounded bg-muted px-1 font-mono">
+                {agyPermission.alwaysAllowPattern}
+              </code>{" "}
+              for this session
+            </span>
           </Button>
           <Button
             size="sm"
             variant="outline"
+            className="h-auto max-w-full whitespace-normal text-left"
             onClick={() => submitPersist("always")}
-            title={`Ask Antigravity to save “${agyPermission.alwaysAllowPattern}” for this Omnigent session, including after a restart`}
+            title={`Ask Antigravity to save a rule allowing commands starting with “${agyPermission.alwaysAllowPattern}” for this Omnigent session`}
             data-testid="approval-card-agy-always-allow"
             componentId="approval.approve_always_agy"
           >
-            <CheckIcon className="mr-1 size-3.5" />
-            Always allow{" "}
-            <code className="rounded bg-muted px-1 font-mono">
-              {agyPermission.alwaysAllowPattern}
-            </code>
+            <CheckIcon className="mr-1 size-3.5 shrink-0" />
+            <span className="min-w-0">
+              Always allow commands starting with{" "}
+              <code className="break-all rounded bg-muted px-1 font-mono">
+                {agyPermission.alwaysAllowPattern}
+              </code>
+            </span>
           </Button>
         </>
       )}

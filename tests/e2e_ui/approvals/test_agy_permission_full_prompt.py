@@ -1,34 +1,12 @@
-"""E2E (UI): the Antigravity (agy) permission card must surface the full prompt.
+"""Exercise Antigravity permission choices in Chat and Inbox.
 
-When agy asks for command permission, its own TUI prompt offers the full menu —
-"Yes", the "always allow" persist variants, and "No" — and describes the action.
-This test guards that the Omnigent web card mirrors that prompt: it must surface
-agy's action description and the persist ("always allow") choices rather than
-collapsing to a bare binary Approve/Reject pair.
-
-The journey is driven exactly the way the production bridge drives it: a REAL
-recorded agy WAITING permission step
-(``tests/fixtures/antigravity/steps/run_command_waiting.json`` — its spec
-advertises ``persistSuggestionType: PERSIST_SUGGESTION_TYPE_SUGGESTED`` with
-``suggestedPersistPattern: "pwd"``, i.e. agy explicitly offers an always-allow
-choice for this prompt, and ``actionDescription: "Running pwd command"``) is
-mapped through the production ``pending_interaction`` →
-``to_elicitation_params`` → ``agy_elicitation_id`` pipeline and parked on the
-live server via the same
-``POST /v1/sessions/{id}/hooks/antigravity-elicitation-request`` long-poll the
-runner-side reader uses. No real agy login is required (agy is OAuth-only, so
-CI cannot run a live turn); everything from the bridge's shape-mapping to the
-browser render is the production path.
-
-Contrast: the Codex MCP approval card (``test_codex_mcp_persistence.py``)
-renders "Approve / Approve for this session / Always allow / Reject" for an
-equivalent persist-capable prompt.
+A recorded native prompt goes through production mapping and the real server
+hook. The browser response proves scope delivery, not live native rule saving.
 """
 
 from __future__ import annotations
 
 import json
-import re
 import threading
 import time
 import uuid
@@ -45,8 +23,6 @@ from omnigent.server.routes._antigravity_elicitation import to_elicitation_param
 
 _APPROVAL_CARD = '[data-testid="approval-card"]'
 _CARD_TIMEOUT_MS = 15_000
-# The card renders synchronously, so its affordances appear promptly.
-_AFFORDANCE_TIMEOUT_MS = 4_000
 
 # A real agy WAITING permission step recorded from a live `agy` session.
 _FIXTURE_PATH = (
@@ -57,11 +33,6 @@ _FIXTURE_PATH = (
     / "run_command_waiting.json"
 )
 
-# Any accessible action name that would carry the "allow always / don't ask
-# again / allow for this session" semantics agy's own prompt offers. Kept
-# deliberately loose so the test pins the *capability*, not one label.
-_ALWAYS_ALLOW_PATTERN = re.compile(r"always|don'?t ask|this session", re.IGNORECASE)
-
 
 def _load_pending_permission() -> PendingInteraction:
     """Parse the recorded agy WAITING step through the production detector."""
@@ -69,8 +40,6 @@ def _load_pending_permission() -> PendingInteraction:
     pending = pending_interaction(step)
     assert pending is not None, "fixture step must be a WAITING interaction"
     assert pending["kind"] == "permission", "fixture step must be a permission gate"
-    # The recorded spec advertises an always-allow persist option — the extra
-    # menu entries agy's own TUI renders for this prompt.
     spec = pending["spec"]
     assert spec.get("persistSuggestionType") == "PERSIST_SUGGESTION_TYPE_SUGGESTED"
     assert spec.get("suggestedPersistPattern") == "pwd"
@@ -83,12 +52,7 @@ def _park_agy_permission_elicitation(
     session_id: str,
     result_holder: dict,
 ) -> threading.Thread:
-    """POST the production-shaped agy permission elicitation hook (long-poll).
-
-    Mirrors ``omnigent.harnesses.antigravity_native.reader._post_agy_elicitation_request``
-    byte-for-byte: ``{"elicitation_id": <agy_elicitation_id(...)>, "params":
-    <to_elicitation_params(pending).model_dump()>}``.
-    """
+    """Park a recorded permission prompt on the production long-poll hook."""
     pending = _load_pending_permission()
     params = to_elicitation_params(dict(pending))
     elicitation_id = agy_elicitation_id(
@@ -107,7 +71,6 @@ def _park_agy_permission_elicitation(
                 timeout=120.0,
             )
             resp.raise_for_status()
-            result_holder["status_code"] = resp.status_code
             result_holder["verdict"] = resp.json()
         except Exception as exc:
             result_holder["error"] = exc
@@ -158,7 +121,10 @@ def _open_pending_agy_card(
 
     def _elicitation_ready() -> bool:
         _require_no_hook_error(result_holder)
-        return bool(_pending_elicitations(base_url, session_id))
+        return any(
+            event.get("elicitation_id") == result_holder["elicitation_id"]
+            for event in _pending_elicitations(base_url, session_id)
+        )
 
     _wait_for(_elicitation_ready, message="agy permission elicitation did not appear")
     page.goto(f"{base_url}/inbox" if surface == "inbox" else f"{base_url}/c/{session_id}")
@@ -172,28 +138,20 @@ def _open_pending_agy_card(
 
 
 def _reject_and_join(
-    card,
     base_url: str,
     session_id: str,
     hook_thread: threading.Thread,
     result_holder: dict,
 ) -> None:
-    """Settle the parked long-poll, then join so a late POST failure surfaces.
-
-    When setup failed before the card rendered, resolve the parked elicitation
-    directly so the hook long-poll thread cannot leak onto the shared server.
-    """
+    """Resolve this test's hook even if rendering failed, then join its thread."""
     eid = result_holder["elicitation_id"]
     try:
-        if card is None:
-            response = httpx.post(
-                f"{base_url}/v1/sessions/{session_id}/elicitations/{eid}/resolve",
-                json={"action": "decline"},
-                timeout=10.0,
-            )
-            response.raise_for_status()
-        elif card.get_attribute("data-state") == "pending":
-            card.get_by_role("button", name="Reject", exact=True).click()
+        response = httpx.post(
+            f"{base_url}/v1/sessions/{session_id}/elicitations/{eid}/resolve",
+            json={"action": "decline"},
+            timeout=10.0,
+        )
+        response.raise_for_status()
         _wait_for(
             lambda: all(
                 event.get("elicitation_id") != eid
@@ -205,39 +163,6 @@ def _reject_and_join(
         hook_thread.join(timeout=30)
     assert not hook_thread.is_alive(), "agy elicitation hook POST did not settle"
     _require_no_hook_error(result_holder)
-
-
-@pytest.mark.timeout(120)
-def test_agy_permission_card_offers_always_allow_choice(
-    page: Page,
-    seeded_session: tuple[str, str],
-) -> None:
-    """The card must expose agy's always-allow choice, not just Approve/Reject.
-
-    agy's own TUI prompt for this exact recorded step is a numbered menu whose
-    middle options are the "always allow" persist variants (the spec advertises
-    ``persistSuggestionType: SUGGESTED`` / ``suggestedPersistPattern: "pwd"``).
-    The web card must surface at least one affordance carrying that semantics;
-    without it a web user cannot express "allow and don't ask again" at all.
-    """
-    base_url, session_id = seeded_session
-    result_holder: dict = {}
-    hook_thread = _park_agy_permission_elicitation(base_url, session_id, result_holder)
-
-    card = None
-    try:
-        card = _open_pending_agy_card(page, base_url, session_id, result_holder)
-
-        # Sanity: the card names the gated command and still offers the binary pair.
-        expect(card).to_contain_text("pwd")
-        expect(card.get_by_role("button", name="Approve", exact=True)).to_be_visible()
-        expect(card.get_by_role("button", name="Reject", exact=True)).to_be_visible()
-
-        # The card must surface agy's advertised always-allow choice.
-        always_allow = card.get_by_role("button", name=_ALWAYS_ALLOW_PATTERN)
-        expect(always_allow.first).to_be_visible(timeout=_AFFORDANCE_TIMEOUT_MS)
-    finally:
-        _reject_and_join(card, base_url, session_id, hook_thread, result_holder)
 
 
 @pytest.mark.timeout(120)
@@ -255,7 +180,16 @@ def test_agy_permission_persist_request_round_trip(
     hook_thread = _park_agy_permission_elicitation(base_url, session_id, result_holder)
     try:
         card = _open_pending_agy_card(page, base_url, session_id, result_holder, surface=surface)
+        expect(card).to_contain_text("Antigravity wants to run: pwd")
+        expect(card).to_contain_text("Running pwd command")
         expect(card).to_contain_text("New sessions have separate rules")
+        for label in (
+            "Approve",
+            "Reject",
+            "Allow commands starting with pwd for this session",
+            "Always allow commands starting with pwd",
+        ):
+            expect(card.get_by_role("button", name=label, exact=True)).to_be_visible()
         card.get_by_test_id(f"approval-card-agy-{persist}-allow").click()
         hook_thread.join(timeout=30)
         assert not hook_thread.is_alive(), "agy elicitation hook POST did not settle"
@@ -276,46 +210,4 @@ def test_agy_permission_persist_request_round_trip(
             expect(card).not_to_be_visible()
     finally:
         if hook_thread.is_alive():
-            _reject_and_join(None, base_url, session_id, hook_thread, result_holder)
-
-
-@pytest.mark.timeout(120)
-def test_agy_permission_cleanup_without_rendered_card(
-    seeded_session: tuple[str, str],
-) -> None:
-    """A setup failure can settle its own parked hook without a browser card."""
-    base_url, session_id = seeded_session
-    result_holder: dict = {}
-    hook_thread = _park_agy_permission_elicitation(base_url, session_id, result_holder)
-    _wait_for(lambda: bool(_pending_elicitations(base_url, session_id)))
-    _reject_and_join(None, base_url, session_id, hook_thread, result_holder)
-    assert not hook_thread.is_alive()
-    assert result_holder["verdict"] == {"action": "decline", "content": None}
-
-
-@pytest.mark.timeout(120)
-def test_agy_permission_card_shows_action_description(
-    page: Page,
-    seeded_session: tuple[str, str],
-) -> None:
-    """The card must show agy's action description, not just the raw command.
-
-    agy's TUI prompt describes what it wants to do ("Running pwd command"); the
-    web card must capture that context so the approver sees the same prompt the
-    terminal shows, rather than only "Antigravity wants to run: pwd".
-    """
-    base_url, session_id = seeded_session
-    result_holder: dict = {}
-    hook_thread = _park_agy_permission_elicitation(base_url, session_id, result_holder)
-
-    card = None
-    try:
-        card = _open_pending_agy_card(page, base_url, session_id, result_holder)
-
-        # Sanity: the card names the gated command.
-        expect(card).to_contain_text("pwd")
-
-        # The card must surface agy's action description.
-        expect(card).to_contain_text("Running pwd command", timeout=_AFFORDANCE_TIMEOUT_MS)
-    finally:
-        _reject_and_join(card, base_url, session_id, hook_thread, result_holder)
+            _reject_and_join(base_url, session_id, hook_thread, result_holder)
