@@ -41,6 +41,7 @@ import logging
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 from urllib.parse import quote
 
@@ -156,7 +157,9 @@ async def _close_unregistered_instance(instance: TerminalInstance) -> _Unregiste
             # The failure is read back from the task below.
             break
     if not close_task.done():
-        close_task.add_done_callback(_log_abandoned_close)
+        _ABANDONED_CLOSES.add(close_task)
+        close_task.add_done_callback(_ABANDONED_CLOSES.discard)
+        close_task.add_done_callback(partial(_log_abandoned_close, instance.diagnostic_id))
         return _UnregisteredCleanup("timed_out", "TimeoutError", caller_cancelled)
     if close_task.cancelled():
         if timed_out:
@@ -168,10 +171,16 @@ async def _close_unregistered_instance(instance: TerminalInstance) -> _Unregiste
     return _UnregisteredCleanup("closed", None, caller_cancelled)
 
 
-def _log_abandoned_close(task: asyncio.Future[None]) -> None:
+# Closes that outlived their grace window; the event loop only holds tasks weakly.
+_ABANDONED_CLOSES: set[asyncio.Future[None]] = set()
+
+
+def _log_abandoned_close(instance_id: str, task: asyncio.Future[None]) -> None:
     if not task.cancelled() and task.exception() is not None:
         logger.warning(
-            "Abandoned terminal close finished with %s", type(task.exception()).__name__
+            "Abandoned terminal close for instance %s finished with %s",
+            instance_id,
+            type(task.exception()).__name__,
         )
 
 

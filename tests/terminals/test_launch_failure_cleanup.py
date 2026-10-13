@@ -133,10 +133,61 @@ async def test_cleanup_failure_keeps_original_launch_error(
     assert raised.value is original
     record = _launch_failed_event(caplog)
     expected_outcome = {"timeout": "timed_out", "timeout_then_error": "error"}
+    expected_error_type = {
+        "error": "RuntimeError",
+        "timeout": "TimeoutError",
+        "timeout_then_error": "RuntimeError",
+        "cancelled": "CancelledError",
+    }
     assert record.attributes["launch_cleanup_outcome"] == expected_outcome.get(
         cleanup_failure, cleanup_failure
     )
+    assert record.attributes["cleanup_error_type"] == expected_error_type[cleanup_failure]
     assert "synthetic-private" not in json.dumps(record.attributes)
+
+
+async def test_close_outliving_its_grace_is_retained_and_logged(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    instance = _stub_instance(tmp_path)
+    original = FileNotFoundError(errno.ENOENT, "synthetic-private-error", "tmux")
+    monkeypatch.setattr(instance, "launch", AsyncMock(side_effect=original))
+    release = asyncio.Event()
+
+    async def close() -> None:
+        while not release.is_set():
+            with contextlib.suppress(asyncio.CancelledError):
+                await release.wait()
+        raise RuntimeError("synthetic-private-cleanup-error")
+
+    monkeypatch.setattr(instance, "close", close)
+    monkeypatch.setattr(
+        registry,
+        "create_terminal_instance",
+        lambda *_a, **_k: TerminalCreateResult(instance, tmp_path),
+    )
+    monkeypatch.setattr(registry, "_CLOSE_TIMEOUT_S", 0.02)
+    caplog.set_level(logging.WARNING, logger=registry.__name__)
+
+    with pytest.raises(FileNotFoundError) as raised:
+        await TerminalRegistry().launch("owned-session", "shell", "main", _spec(tmp_path))
+
+    assert raised.value is original
+    assert _launch_failed_event(caplog).attributes["launch_cleanup_outcome"] == "timed_out"
+    (abandoned,) = registry._ABANDONED_CLOSES
+    assert not abandoned.done()
+
+    release.set()
+    await asyncio.wait({abandoned}, timeout=5)
+    await asyncio.sleep(0)
+    assert abandoned.done()
+    assert not registry._ABANDONED_CLOSES
+    messages = [record.getMessage() for record in caplog.records]
+    assert any(
+        "Abandoned terminal close" in m and instance.diagnostic_id in m and "RuntimeError" in m
+        for m in messages
+    )
+    assert not any("synthetic-private" in m for m in messages)
 
 
 @pytest.mark.parametrize("cancel_requests", [1, 2])

@@ -49,6 +49,7 @@ async def test_terminal_retry_after_spawn_failure_has_no_orphans(
         for _ in range(3):
             with pytest.raises(FileNotFoundError):
                 await launch(session_id, "terminal", "main", failed_spec, resource_role=role)
+            assert instances, "create_terminal_instance was never intercepted"
             assert all(not instance.private_dir.exists() for instance in instances)
             assert resources.list_resources(session_id, resource_type="terminal").data == []
 
