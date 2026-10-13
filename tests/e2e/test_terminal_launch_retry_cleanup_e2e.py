@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import shutil
 from pathlib import Path
 from typing import Any
@@ -65,4 +66,5 @@ async def test_terminal_retry_after_spawn_failure_has_no_orphans(
         assert terminals.active_conversation_ids() == []
     finally:
         for instance in instances:
-            await instance.close()
+            with contextlib.suppress(Exception):
+                await instance.close()

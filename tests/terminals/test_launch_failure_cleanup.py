@@ -51,11 +51,16 @@ def _stub_instance(tmp_path: Path) -> TerminalInstance:
 
 
 def _launch_failed_event(caplog: pytest.LogCaptureFixture) -> logging.LogRecord:
-    return next(
-        record
-        for record in caplog.records
-        if getattr(record, "event_name", None) == "terminal_launch_failed"
+    record = next(
+        (
+            record
+            for record in caplog.records
+            if getattr(record, "event_name", None) == "terminal_launch_failed"
+        ),
+        None,
     )
+    assert record is not None, "expected a terminal_launch_failed log event"
+    return record
 
 
 @requires_tmux
@@ -87,7 +92,9 @@ async def test_missing_tmux_during_spawn_releases_private_resources(
             await instance.close()
 
 
-@pytest.mark.parametrize("cleanup_failure", ["error", "timeout", "cancelled"])
+@pytest.mark.parametrize(
+    "cleanup_failure", ["error", "timeout", "timeout_then_error", "cancelled"]
+)
 async def test_cleanup_failure_keeps_original_launch_error(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -101,6 +108,11 @@ async def test_cleanup_failure_keeps_original_launch_error(
     async def close() -> None:
         if cleanup_failure == "timeout":
             await asyncio.Event().wait()
+        elif cleanup_failure == "timeout_then_error":
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                raise RuntimeError("synthetic-private-cleanup-error") from None
         elif cleanup_failure == "cancelled":
             raise asyncio.CancelledError
         else:
@@ -120,8 +132,9 @@ async def test_cleanup_failure_keeps_original_launch_error(
 
     assert raised.value is original
     record = _launch_failed_event(caplog)
-    assert record.attributes["launch_cleanup_outcome"] == (
-        "timed_out" if cleanup_failure == "timeout" else cleanup_failure
+    expected_outcome = {"timeout": "timed_out", "timeout_then_error": "error"}
+    assert record.attributes["launch_cleanup_outcome"] == expected_outcome.get(
+        cleanup_failure, cleanup_failure
     )
     assert "synthetic-private" not in json.dumps(record.attributes)
 
@@ -157,12 +170,14 @@ async def test_caller_cancellation_during_cleanup_finishes_close_then_propagates
     task = asyncio.create_task(
         TerminalRegistry().launch("owned-session", "shell", "main", _spec(tmp_path))
     )
-    await asyncio.wait_for(close_started.wait(), timeout=5)
-    for _ in range(cancel_requests):
-        task.cancel()
-        await asyncio.sleep(0)
-    assert not closed
-    release_close.set()
+    try:
+        await asyncio.wait_for(close_started.wait(), timeout=5)
+        for _ in range(cancel_requests):
+            task.cancel()
+            await asyncio.sleep(0)
+        assert not closed
+    finally:
+        release_close.set()
 
     with pytest.raises(asyncio.CancelledError) as raised:
         await task
