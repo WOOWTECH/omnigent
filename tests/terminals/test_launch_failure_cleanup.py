@@ -19,11 +19,8 @@ from omnigent.inner.datamodel import OSEnvSandboxSpec, OSEnvSpec, TerminalEnvSpe
 from omnigent.inner.terminal import TerminalCreateResult, TerminalInstance
 from omnigent.terminals import TerminalRegistry, registry
 
-pytestmark = [
-    pytest.mark.asyncio,
-    pytest.mark.skipif(shutil.which("tmux") is None, reason="tmux is required"),
-    pytest.mark.timeout(20),
-]
+pytestmark = [pytest.mark.asyncio, pytest.mark.timeout(20)]
+requires_tmux = pytest.mark.skipif(shutil.which("tmux") is None, reason="tmux is required")
 
 
 def _capture_instances(monkeypatch: pytest.MonkeyPatch) -> list[TerminalInstance]:
@@ -47,6 +44,21 @@ def _spec(workspace: Path, *, env: dict[str, str] | None = None) -> TerminalEnvS
     )
 
 
+def _stub_instance(tmp_path: Path) -> TerminalInstance:
+    return TerminalInstance(
+        name="shell", session_key="main", socket_path=tmp_path / "socket", private_dir=tmp_path
+    )
+
+
+def _launch_failed_event(caplog: pytest.LogCaptureFixture) -> logging.LogRecord:
+    return next(
+        record
+        for record in caplog.records
+        if getattr(record, "event_name", None) == "terminal_launch_failed"
+    )
+
+
+@requires_tmux
 async def test_missing_tmux_during_spawn_releases_private_resources(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
@@ -65,11 +77,7 @@ async def test_missing_tmux_during_spawn_releases_private_resources(
         assert not created[0].private_dir.exists()
         assert terminal_registry.list_for_conversation("owned-session") == []
         assert terminal_registry.active_conversation_ids() == []
-        record = next(
-            record
-            for record in caplog.records
-            if getattr(record, "event_name", None) == "terminal_launch_failed"
-        )
+        record = _launch_failed_event(caplog)
         assert record.attributes["launch_stage"] == "terminal_spawn"
         assert record.attributes["native_launch_os_errno"] == errno.ENOENT
         assert record.attributes["launch_cleanup_outcome"] == "closed"
@@ -86,9 +94,7 @@ async def test_cleanup_failure_keeps_original_launch_error(
     caplog: pytest.LogCaptureFixture,
     cleanup_failure: str,
 ) -> None:
-    instance = TerminalInstance(
-        name="shell", session_key="main", socket_path=tmp_path / "socket", private_dir=tmp_path
-    )
+    instance = _stub_instance(tmp_path)
     original = FileNotFoundError(errno.ENOENT, "synthetic-private-error", "synthetic-private-file")
     monkeypatch.setattr(instance, "launch", AsyncMock(side_effect=original))
 
@@ -113,17 +119,91 @@ async def test_cleanup_failure_keeps_original_launch_error(
         await TerminalRegistry().launch("owned-session", "shell", "main", _spec(tmp_path))
 
     assert raised.value is original
-    record = next(
-        record
-        for record in caplog.records
-        if getattr(record, "event_name", None) == "terminal_launch_failed"
-    )
+    record = _launch_failed_event(caplog)
     assert record.attributes["launch_cleanup_outcome"] == (
         "timed_out" if cleanup_failure == "timeout" else cleanup_failure
     )
     assert "synthetic-private" not in json.dumps(record.attributes)
 
 
+@pytest.mark.parametrize("cancel_requests", [1, 2])
+async def test_caller_cancellation_during_cleanup_finishes_close_then_propagates(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    cancel_requests: int,
+) -> None:
+    instance = _stub_instance(tmp_path)
+    original = FileNotFoundError(errno.ENOENT, "synthetic-private-error", "tmux")
+    monkeypatch.setattr(instance, "launch", AsyncMock(side_effect=original))
+    close_started = asyncio.Event()
+    release_close = asyncio.Event()
+    closed = False
+
+    async def close() -> None:
+        nonlocal closed
+        close_started.set()
+        await release_close.wait()
+        closed = True
+
+    monkeypatch.setattr(instance, "close", close)
+    monkeypatch.setattr(
+        registry,
+        "create_terminal_instance",
+        lambda *_a, **_k: TerminalCreateResult(instance, tmp_path),
+    )
+    caplog.set_level(logging.WARNING, logger=registry.__name__)
+
+    task = asyncio.create_task(
+        TerminalRegistry().launch("owned-session", "shell", "main", _spec(tmp_path))
+    )
+    await asyncio.wait_for(close_started.wait(), timeout=5)
+    for _ in range(cancel_requests):
+        task.cancel()
+        await asyncio.sleep(0)
+    assert not closed
+    release_close.set()
+
+    with pytest.raises(asyncio.CancelledError) as raised:
+        await task
+
+    assert closed
+    assert raised.value.__cause__ is original
+    record = _launch_failed_event(caplog)
+    assert record.attributes["exception_type"] == "FileNotFoundError"
+    assert record.attributes["launch_cleanup_outcome"] == "closed"
+    assert record.attributes["cancelled_during_cleanup"] is True
+
+
+async def test_immediate_exit_closes_once_and_keeps_exit_evidence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    instance = _stub_instance(tmp_path)
+    monkeypatch.setattr(instance, "launch", AsyncMock())
+    monkeypatch.setattr(instance, "is_alive", AsyncMock(return_value=False))
+    close = AsyncMock()
+    monkeypatch.setattr(instance, "close", close)
+    monkeypatch.setattr(
+        registry,
+        "create_terminal_instance",
+        lambda *_a, **_k: TerminalCreateResult(instance, tmp_path),
+    )
+    caplog.set_level(logging.WARNING, logger=registry.__name__)
+    terminal_registry = TerminalRegistry()
+
+    with pytest.raises(registry.TerminalExitedDuringLaunch) as raised:
+        await terminal_registry.launch("owned-session", "shell", "main", _spec(tmp_path))
+
+    assert raised.value.instance is instance
+    close.assert_awaited_once()
+    assert terminal_registry.get("owned-session", "shell", "main") is None
+    record = _launch_failed_event(caplog)
+    assert record.attributes["launch_stage"] == "terminal_liveness"
+    assert record.attributes["exception_type"] == "TerminalExitedDuringLaunch"
+    assert record.attributes["launch_cleanup_outcome"] == "closed"
+
+
+@requires_tmux
 @pytest.mark.parametrize("cancel_stage", ["spawn", "liveness"])
 async def test_cancelled_launch_reaps_real_tmux(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, cancel_stage: str

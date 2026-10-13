@@ -60,9 +60,9 @@ async def test_terminal_retry_after_spawn_failure_has_no_orphans(
         async with asyncio.timeout(5):
             while "CLEAN_RETRY_MARKER" not in (await instance.read())["screen"]:
                 await asyncio.sleep(0.05)
-    finally:
         await resources.cleanup_session(session_id)
+        assert all(not instance.private_dir.exists() for instance in instances)
+        assert terminals.active_conversation_ids() == []
+    finally:
         for instance in instances:
             await instance.close()
-    assert all(not instance.private_dir.exists() for instance in instances)
-    assert terminals.active_conversation_ids() == []
