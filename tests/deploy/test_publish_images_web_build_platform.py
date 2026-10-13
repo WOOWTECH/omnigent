@@ -61,8 +61,7 @@ def _uses(step: dict, action: str) -> bool:
 
 def test_release_image_builds_do_not_run_web_build_under_emulation() -> None:
     workflow = yaml.safe_load(_WORKFLOW.read_text())
-    stages = _stages(_DOCKERFILE.read_text())
-    default_target = stages[-1]["name"]
+    stages_by_file: dict[str, list[dict]] = {}
 
     emulated = []
     for job_name, job in workflow["jobs"].items():
@@ -72,16 +71,23 @@ def test_release_image_builds_do_not_run_web_build_under_emulation() -> None:
         for step in steps:
             if not _uses(step, "docker/build-push-action"):
                 continue
+            label = f"{job_name} / {step.get('name', step['uses'])}"
             inputs = step.get("with", {})
             platforms = str(inputs.get("platforms", ""))
             if "${{" in platforms:
-                platforms = str(job.get("strategy", {}))
+                # Only a matrix resolves statically; anything else must fail
+                # loudly instead of silently skipping the guard.
+                assert "strategy" in job, f"{label}: cannot resolve platforms {platforms!r}"
+                platforms = str(job["strategy"])
             if "linux/arm64" not in platforms:
                 continue
-            target = inputs.get("target", default_target)
+            dockerfile = str(inputs.get("file", "Dockerfile"))
+            if dockerfile not in stages_by_file:
+                stages_by_file[dockerfile] = _stages((_ROOT / dockerfile).read_text())
+            stages = stages_by_file[dockerfile]
+            target = inputs.get("target", stages[-1]["name"])
             for stage in _emulated_web_build_stages(stages, target):
-                label = step.get("name", step["uses"])
-                emulated.append(f"{job_name} / {label} -> stage {stage}")
+                emulated.append(f"{label} -> stage {stage}")
 
     assert not emulated, (
         "These image builds run the web SPA build (`pnpm ... run build`) under QEMU arm64 "
