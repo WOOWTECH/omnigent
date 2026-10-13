@@ -21,10 +21,11 @@ _COPY_FROM = re.compile(
 )
 _WEB_BUILD = re.compile(r"^RUN\b.*\bpnpm\b.*\brun build\b", re.MULTILINE)
 _BUILD_PLATFORM = re.compile(r"--platform=\$\{?BUILDPLATFORM\}?")
-_MATRIX_PLATFORMS = re.compile(r"^\$\{\{\s*matrix\.(?P<key>[\w-]+)\s*\}\}$")
 
 
 def _stages(dockerfile: str) -> list[dict]:
+    # Join backslash continuations so a wrapped RUN still reads as one instruction.
+    dockerfile = dockerfile.replace("\\\n", " ")
     froms = list(_FROM_LINE.finditer(dockerfile))
     stages = []
     for index, match in enumerate(froms):
@@ -60,24 +61,19 @@ def _uses(step: dict, action: str) -> bool:
     return str(step.get("uses", "")).startswith(action)
 
 
-def _step_platforms(job: dict, inputs: dict, label: str) -> str:
-    """A step's platforms: a literal, or one `${{ matrix.<key> }}` resolved from the job."""
+def _step_platforms(inputs: dict, label: str) -> str:
+    """A step's literal `platforms`; this guard cannot evaluate workflow expressions."""
     platforms = str(inputs.get("platforms", ""))
-    if "${{" not in platforms:
-        return platforms
-    match = _MATRIX_PLATFORMS.fullmatch(platforms.strip())
-    matrix = (job.get("strategy") or {}).get("matrix")
-    if not match or not isinstance(matrix, dict) or match["key"] not in matrix:
+    if "${{" in platforms:
         pytest.fail(f"{label}: cannot resolve platforms {platforms!r}; extend this guard")
-    values = matrix[match["key"]]
-    return ",".join(map(str, values if isinstance(values, list) else [values]))
+    return platforms
 
 
 def test_release_image_builds_do_not_run_web_build_under_emulation() -> None:
     workflow = yaml.safe_load(_WORKFLOW.read_text())
     stages_by_file: dict[str, list[dict]] = {}
 
-    emulated = []
+    inspected, emulated = [], []
     for job_name, job in workflow["jobs"].items():
         steps = job.get("steps", [])
         if not any(_uses(step, "docker/setup-qemu-action") for step in steps):
@@ -87,8 +83,9 @@ def test_release_image_builds_do_not_run_web_build_under_emulation() -> None:
                 continue
             label = f"{job_name} / {step.get('name', step['uses'])}"
             inputs = step.get("with", {})
-            if "linux/arm64" not in _step_platforms(job, inputs, label):
+            if "linux/arm64" not in _step_platforms(inputs, label):
                 continue
+            inspected.append(label)
             dockerfile = str(inputs.get("file", "Dockerfile"))
             if dockerfile not in stages_by_file:
                 stages_by_file[dockerfile] = _stages((_ROOT / dockerfile).read_text())
@@ -97,6 +94,7 @@ def test_release_image_builds_do_not_run_web_build_under_emulation() -> None:
             for stage in _emulated_web_build_stages(stages, target):
                 emulated.append(f"{label} -> stage {stage}")
 
+    assert inspected, "no QEMU-emulated linux/arm64 image build found in the publish workflow"
     assert not emulated, (
         "These image builds run the web SPA build (`pnpm ... run build`) under QEMU arm64 "
         "emulation, where it has hung past the job timeout and left release tags "
@@ -117,35 +115,13 @@ def test_web_builder_stage_is_pinned_to_the_build_platform(dockerfile: Path) -> 
     )
 
 
-@pytest.mark.parametrize(
-    ("platforms", "strategy", "expected"),
-    [
-        ("linux/amd64,linux/arm64", None, "linux/amd64,linux/arm64"),
-        (
-            "${{ matrix.platform }}",
-            {"matrix": {"platform": ["linux/amd64", "linux/arm64"]}},
-            "linux/amd64,linux/arm64",
-        ),
-    ],
-)
-def test_step_platforms_resolves_literals_and_matrix_keys(
-    platforms: str, strategy: dict | None, expected: str
-) -> None:
-    job = {"strategy": strategy} if strategy else {}
-    assert _step_platforms(job, {"platforms": platforms}, "job / step") == expected
+def test_stages_detects_a_line_continued_web_build() -> None:
+    dockerfile = (
+        "FROM node AS web-builder\nRUN pnpm install && \\\n    pnpm --filter web run build\n"
+    )
+    assert _stages(dockerfile)[0]["builds_web"]
 
 
-@pytest.mark.parametrize(
-    ("platforms", "strategy"),
-    [
-        ("${{ inputs.platforms }}", {"matrix": {"platform": ["linux/arm64"]}}),
-        ("${{ matrix.platform }}", {"matrix": {"other": ["linux/arm64"]}}),
-        ("${{ matrix.platform }}", None),
-    ],
-)
-def test_step_platforms_rejects_unresolvable_expressions(
-    platforms: str, strategy: dict | None
-) -> None:
-    job = {"strategy": strategy} if strategy else {}
+def test_step_platforms_rejects_workflow_expressions() -> None:
     with pytest.raises(pytest.fail.Exception, match="cannot resolve platforms"):
-        _step_platforms(job, {"platforms": platforms}, "job / step")
+        _step_platforms({"platforms": "${{ matrix.platform }}"}, "job / step")
