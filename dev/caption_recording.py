@@ -68,13 +68,19 @@ def probe(source: Path) -> dict[str, Any]:
     width, height = int(video.get("width") or 0), int(video.get("height") or 0)
     if width <= 0 or height <= 0:
         raise ValueError("Source video must have known positive dimensions")
-    duration = float(video.get("duration") or 0)
+    try:
+        duration = float(video.get("duration") or 0)
+    except (TypeError, ValueError):
+        duration = 0.0
     if not duration:
         # WebM exposes per-stream duration as a tag; container duration may include longer audio.
         tag = (video.get("tags") or {}).get("DURATION")
         if tag:
-            hours, minutes, seconds = tag.split(":")
-            duration = float(hours) * 3600 + float(minutes) * 60 + float(seconds)
+            try:
+                hours, minutes, seconds = tag.split(":")
+                duration = float(hours) * 3600 + float(minutes) * 60 + float(seconds)
+            except ValueError:
+                duration = 0.0
     if not math.isfinite(duration) or duration <= 0:
         raise ValueError("Source video stream must have a known positive duration")
     return {"width": width, "height": height, "duration": duration}

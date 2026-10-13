@@ -64,9 +64,11 @@ Recording is **best-effort**:
 Every declared recording includes `capture_mode`, which records how the product
 surface was filmed. Use `playwright_ui` for browser-page capture, `electron` for
 the desktop harness, `vhs_user_command` for a VHS tape that types the real user
-command, and `screen` for a direct device/screen capture. Do not declare a raw
-recorder output: copy the selected clip to a stable `<kind>-<facet>.<ext>` path
-first, then declare only that path. Undeclared media remains available in the CI
+command, and `screen` for a direct device/screen capture. For every lane, save
+the selected raw capture as `recordings/<slug>/raw/<kind>-<facet>.<ext>`;
+reserve `recordings/<slug>/<kind>-<facet>.mp4` for the captioned render.
+Declare only the finished clip after following "Finishing a clip" below.
+Undeclared media remains available in the CI
 artifact for debugging but is not attached to Linear or a PR.
 
 ## The recorder needs its own local server
@@ -255,7 +257,8 @@ unavailable here, keep `recordings: []` and name the missing CLI in your evidenc
 Author/replay a VHS tape (`recordings/<slug>/journey.tape`) that replays the SAME
 numbered journey steps as the PTY test: `Type`/`Enter` the user's commands,
 `Wait /pattern/` on the observable outcome, with an
-`Output recordings/<slug>/<kind>-<facet>.mp4` directive. Render with
+`Output recordings/<slug>/raw/<kind>-<facet>.mp4` directive. Create the `raw/`
+directory first. Render with
 `vhs recordings/<slug>/journey.tape`. If `vhs` is unavailable, still keep the
 tape and note that rendering was skipped.
 
@@ -314,8 +317,9 @@ evidence (a real environment limit, not a `not_reproduced`). See
 
 A recording must end on the outcome the user observes — the failure (wrong screen
 state, bad output, error) for a `before` recording, or the correct end state for a
-`fixed`/`after` one. Convert to `.mp4` with `ffmpeg` when available; `.webm`/`.gif`
-are fine otherwise. Recordings are workspace artifacts exactly like the test —
+`fixed`/`after` one. Keep its capture format under `raw/`; the caption helper
+produces the final `.mp4`, so no preliminary conversion is needed.
+Recordings are workspace artifacts exactly like the test —
 leave them uncommitted; in CI the artifact bundle collects them.
 
 Check the clip's last frame before captioning it. Every clip must stop on the
@@ -369,6 +373,11 @@ below the attachment; it does not replace captions visible during playback.
      --cues recordings/<slug>/<kind>-<facet>.cues.json \
      --output recordings/<slug>/<kind>-<facet>.mp4
    ```
+
+   For VHS or device captures already in MP4, use
+   `--source recordings/<slug>/raw/<kind>-<facet>.mp4` with the same output path.
+   For Electron or direct screen captures, move the selected capture under
+   `raw/` first, preserving its extension.
 
    Run the helper from the Omnigent tools checkout if the target repository is
    different. It pads below the original screen so captions do not cover controls

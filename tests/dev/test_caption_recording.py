@@ -104,7 +104,10 @@ def _frame(path: Path, seconds: float, crop: str) -> bytes:
 
 
 @pytest.mark.parametrize("audio_duration", [None, 4, 6], ids=["silent", "audio", "longer-audio"])
-def test_render_preserves_footage_audio_and_timing_with_captions_below(tmp_path, audio_duration):
+@pytest.mark.parametrize("container", ["mp4", "webm"])
+def test_render_preserves_footage_audio_and_timing_with_captions_below(
+    tmp_path, audio_duration, container
+):
     if not all(shutil.which(tool) for tool in ("ffmpeg", "ffprobe")):
         pytest.skip("Install ffmpeg and ffprobe for the real media check")
     filters = _run(["ffmpeg", "-hide_banner", "-filters"]).decode()
@@ -117,7 +120,7 @@ def test_render_preserves_footage_audio_and_timing_with_captions_below(tmp_path,
     # Special characters in both paths and text must never become filter syntax.
     folder = tmp_path / "a:b's [recording]"
     folder.mkdir()
-    source = folder / "raw.mp4"
+    source = folder / f"raw.{container}"
     command = [
         "ffmpeg",
         "-v",
@@ -132,11 +135,11 @@ def test_render_preserves_footage_audio_and_timing_with_captions_below(tmp_path,
     command.extend(
         [
             "-c:v",
-            "libx264",
+            "libx264" if container == "mp4" else "libvpx-vp9",
             "-pix_fmt",
             "yuv420p",
             "-c:a",
-            "aac",
+            "aac" if container == "mp4" else "libopus",
             str(source),
         ]
     )
@@ -183,12 +186,23 @@ def test_render_preserves_footage_audio_and_timing_with_captions_below(tmp_path,
             caption_recording(source, cues, folder / "invalid-captions.mp4")
 
 
-@pytest.mark.parametrize("tag", ["00:00:01.000000000", None])
-def test_webm_video_duration_does_not_use_longer_container_duration(tmp_path, monkeypatch, tag):
-    video = {"codec_type": "video", "width": 640, "height": 360, "tags": {"DURATION": tag}}
+@pytest.mark.parametrize(
+    "tag", ["00:00:01.000000000", None, "1.0", "00:00:01:00", "bad:tag:value"]
+)
+@pytest.mark.parametrize("duration", [None, "N/A"])
+def test_webm_video_duration_does_not_use_longer_container_duration(
+    tmp_path, monkeypatch, tag, duration
+):
+    video = {
+        "codec_type": "video",
+        "width": 640,
+        "height": 360,
+        "tags": {"DURATION": tag},
+        "duration": duration,
+    }
     info = {"streams": [video], "format": {"duration": "4"}}
     monkeypatch.setattr("dev.caption_recording.run", lambda *a, **kw: json.dumps(info))
-    if tag:
+    if tag == "00:00:01.000000000":
         assert probe(tmp_path / "clip.webm")["duration"] == 1
     else:
         with pytest.raises(ValueError, match="video stream must have a known positive duration"):
