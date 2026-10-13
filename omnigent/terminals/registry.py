@@ -44,6 +44,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import quote
 
+from omnigent.debug_logging import debug_event
 from omnigent.inner.datamodel import OSEnvSpec, TerminalEnvSpec
 from omnigent.inner.os_env import OSEnvironment
 from omnigent.inner.terminal import TerminalInstance, create_terminal_instance
@@ -257,20 +258,51 @@ class TerminalRegistry:
             sandbox_override=sandbox_override,
             conversation_link=self.conversation_link_for_id(conversation_id),
         )
-        created.instance.lifecycle_trace.transfer_session(conversation_id)
-        await created.instance.launch(cwd=created.cwd)
-        if not await created.instance.is_alive():
-            created.instance.lifecycle_trace.note_exit()
+        stage = "terminal_spawn"
+        try:
+            created.instance.lifecycle_trace.transfer_session(conversation_id)
+            await created.instance.launch(cwd=created.cwd)
+            stage = "terminal_liveness"
+            if not await created.instance.is_alive():
+                created.instance.lifecycle_trace.note_exit()
+                raise TerminalExitedDuringLaunch(created.instance)
+        except BaseException as exc:
+            # Until registration, no shutdown sweep can discover this instance.
+            cleanup_outcome = "closed"
+            cleanup_error_type: str | None = None
             try:
                 await asyncio.wait_for(created.instance.close(), timeout=_CLOSE_TIMEOUT_S)
             except asyncio.TimeoutError:
-                logger.warning(
-                    "Newly launched terminal close timed out for %s:%s in conv %s",
-                    terminal_name,
-                    session_key,
-                    conversation_id,
-                )
-            raise TerminalExitedDuringLaunch(created.instance)
+                cleanup_outcome = "timed_out"
+                cleanup_error_type = "TimeoutError"
+            except asyncio.CancelledError:
+                cleanup_outcome = "cancelled"
+                cleanup_error_type = "CancelledError"
+            except Exception as cleanup_exc:
+                cleanup_outcome = "error"
+                cleanup_error_type = type(cleanup_exc).__name__
+            cancelled = isinstance(exc, asyncio.CancelledError)
+            logger.log(
+                logging.INFO if cancelled and cleanup_outcome == "closed" else logging.WARNING,
+                "Terminal launch failed during %s; cleanup=%s",
+                stage,
+                cleanup_outcome,
+                extra=debug_event(
+                    "terminal_launch_failed",
+                    session_id=conversation_id,
+                    terminal_name=terminal_name,
+                    terminal_key=session_key,
+                    terminal_instance_id=created.instance.diagnostic_id,
+                    terminal_launch_id=created.instance.lifecycle_trace.launch_id,
+                    launch_stage=stage,
+                    launch_outcome="cancelled" if cancelled else "error",
+                    exception_type=type(exc).__name__,
+                    native_launch_os_errno=exc.errno if isinstance(exc, OSError) else None,
+                    launch_cleanup_outcome=cleanup_outcome,
+                    cleanup_error_type=cleanup_error_type,
+                ),
+            )
+            raise
 
         with self._lock:
             slot = self._by_conversation.setdefault(conversation_id, {})
