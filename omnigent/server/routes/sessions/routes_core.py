@@ -3277,8 +3277,9 @@ def register_core_routes(
             has no agent binding, ``body.up_to_response_id`` names
             no response in the source session, or a managed fork asks
             for a sandbox this server has not configured; 410 if the
-            source's agent was removed, or its bundle is gone and the
-            fork would need its own copy (fork into another agent).
+            source's agent was removed, or the agent the fork binds (the
+            source's, or ``body.agent_id``) needs its own copy (another
+            user's or an unowned agent) and its bundle is gone.
         """
         user_id = _get_user_id(request, auth_provider)
         access = await _require_access_and_level(

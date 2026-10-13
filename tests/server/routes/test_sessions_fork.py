@@ -24,7 +24,7 @@ from omnigent.entities import (
     PagedList,
     StoredFile,
 )
-from omnigent.errors import OmnigentError
+from omnigent.errors import SESSION_AGENT_BUNDLE_MISSING_MESSAGE, OmnigentError
 from omnigent.server.auth import AuthProvider, UnifiedAuthProvider
 from omnigent.server.managed_hosts import (
     MANAGED_REPO_LABEL_KEY,
@@ -2456,10 +2456,7 @@ async def test_failed_cross_user_fork_removes_its_copied_bundle() -> None:
 async def test_fork_needing_a_copy_of_a_missing_bundle_is_refused_cleanly(
     caller: str, source_owner: str | None
 ) -> None:
-    """A legacy session agent with no recorded owner and a cross-user fork both
-    need their own copy of the bundle. When that blob is gone, the fork is
-    refused as ``session_agent_missing`` before anything is created, so the
-    dialog can offer another agent instead of an internal error."""
+    """Missing bundles fail before legacy or cross-user forks create anything."""
     agent_id = "30f9aa4d441e344d3eb273f8cc13e4a5"
     conv_store = _ConversationStore(
         conversations={"e9f8f58523cec9a57d3bdf93be543e8c": _make_conversation(agent_id=agent_id)},
@@ -2503,7 +2500,7 @@ async def test_fork_needing_a_copy_of_a_missing_bundle_is_refused_cleanly(
     assert resp.status_code == 410, resp.text
     error = resp.json()["error"]
     assert error["code"] == "session_agent_missing"
-    assert "another agent" in error["message"]
+    assert error["message"] == SESSION_AGENT_BUNDLE_MISSING_MESSAGE
     assert conv_store.fork_calls == []
     assert artifacts.blobs == {}, "no copy may be written without a source"
 

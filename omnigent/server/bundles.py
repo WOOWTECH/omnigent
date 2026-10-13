@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING
 from sqlalchemy.exc import IntegrityError
 
 from omnigent.db.utils import generate_agent_id, uploaded_agent_id
-from omnigent.errors import ErrorCode, OmnigentError
+from omnigent.errors import SESSION_AGENT_BUNDLE_MISSING_MESSAGE, ErrorCode, OmnigentError
 from omnigent.inner.datamodel import OSEnvSpec
 from omnigent.spec import AgentSpec, ExtractionError, ToolRuntime, load
 
@@ -201,9 +201,7 @@ def copy_agent_bundle(artifact_store: ArtifactStore, location: str, new_agent_id
             "agent bundle %s is missing from the artifact store; cannot copy it", location
         )
         raise OmnigentError(
-            "This agent's bundle no longer exists, so it cannot be copied. "
-            "Choose another agent to continue.",
-            code=ErrorCode.SESSION_AGENT_MISSING,
+            SESSION_AGENT_BUNDLE_MISSING_MESSAGE, code=ErrorCode.SESSION_AGENT_MISSING
         ) from exc
     new_location = bundle_location(new_agent_id, data)
     artifact_store.put(new_location, data)

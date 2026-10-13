@@ -23,7 +23,7 @@ import pytest
 import yaml
 
 from omnigent.db.utils import generate_agent_id
-from omnigent.errors import ErrorCode, OmnigentError
+from omnigent.errors import SESSION_AGENT_BUNDLE_MISSING_MESSAGE, ErrorCode, OmnigentError
 from omnigent.server.bundles import agent_for_user, copy_agent_bundle, validate_agent_bundle
 from omnigent.stores.agent_store.sqlalchemy_store import SqlAlchemyAgentStore
 from omnigent.stores.artifact_store.local import LocalArtifactStore
@@ -575,7 +575,7 @@ def test_copy_agent_bundle_reports_a_missing_source_blob(tmp_path: Path) -> None
 
     assert excinfo.value.code == ErrorCode.SESSION_AGENT_MISSING
     assert excinfo.value.http_status == 410
-    assert "another agent" in excinfo.value.message
+    assert excinfo.value.message == SESSION_AGENT_BUNDLE_MISSING_MESSAGE
     assert [p for p in root.rglob("*") if p.is_file()] == [], "nothing is written without a source"
 
 
