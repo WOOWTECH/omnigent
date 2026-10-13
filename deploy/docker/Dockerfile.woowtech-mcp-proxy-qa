@@ -1,0 +1,19 @@
+# Fork-only QA image: preserve the deployed v0.17.0 host bytes and replace only
+# the three MCP runner modules changed by the catalog/dispatch fix.
+# The index digest equals the JFrog omnigent-host pin used by WoowTech PaaS.
+FROM ghcr.io/omnigent-ai/omnigent-host:v0.17.0@sha256:51880f0edb7e0357f395f88f4bc3c4e1dfc3df06e46cffb55ae6700c1dfd82b2
+
+COPY omnigent/runner/mcp_routes.py omnigent/runner/proxy_mcp_manager.py omnigent/runner/tool_dispatch.py /opt/venv/lib/python3.12/site-packages/omnigent/runner/
+COPY omnigent/runner/mcp_routes.py omnigent/runner/proxy_mcp_manager.py omnigent/runner/tool_dispatch.py /build/omnigent/runner/
+
+RUN /opt/venv/bin/python - <<'PY'
+import importlib
+from pathlib import Path
+
+for name in ('mcp_routes', 'proxy_mcp_manager', 'tool_dispatch'):
+    module = importlib.import_module(f'omnigent.runner.{name}')
+    installed = Path(module.__file__).resolve()
+    assert installed == Path(f'/opt/venv/lib/python3.12/site-packages/omnigent/runner/{name}.py')
+    assert installed.read_bytes() == Path(f'/build/omnigent/runner/{name}.py').read_bytes()
+print('MCP runner overlay imports from installed package: PASS')
+PY
