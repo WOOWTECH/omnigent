@@ -2367,8 +2367,13 @@ async def test_fork_copies_only_another_users_agent(
 
 def _cross_user_fork(
     artifact_store: _ArtifactStore | None,
+    *,
+    source_owner: str | None = "owner@example.com",
 ) -> tuple[TestClient, _ConversationStore]:
-    """A forker's client for a session whose agent belongs to another user."""
+    """A header-auth client for a session whose agent belongs to *source_owner*.
+
+    ``None`` is a legacy session agent with no recorded owner.
+    """
     agent_id = "30f9aa4d441e344d3eb273f8cc13e4a5"
     conv_store = _ConversationStore(
         conversations={"e9f8f58523cec9a57d3bdf93be543e8c": _make_conversation(agent_id=agent_id)},
@@ -2386,7 +2391,7 @@ def _cross_user_fork(
                 name="orion",
                 bundle_location=f"{agent_id}/e70dc208",
                 session_id="e9f8f58523cec9a57d3bdf93be543e8c",
-                created_by="owner@example.com",
+                created_by=source_owner,
             ),
         }
     )
@@ -2457,39 +2462,8 @@ async def test_fork_needing_a_copy_of_a_missing_bundle_is_refused_cleanly(
     caller: str, source_owner: str | None
 ) -> None:
     """Missing bundles fail before legacy or cross-user forks create anything."""
-    agent_id = "30f9aa4d441e344d3eb273f8cc13e4a5"
-    conv_store = _ConversationStore(
-        conversations={"e9f8f58523cec9a57d3bdf93be543e8c": _make_conversation(agent_id=agent_id)},
-        items_by_conv={
-            "e9f8f58523cec9a57d3bdf93be543e8c": [
-                _make_item("9980c8a9248139f14f4165e5d53088aa", "Hi")
-            ]
-        },
-    )
-    agent_store = _AgentStore(
-        agents={
-            agent_id: Agent(
-                id=agent_id,
-                created_at=1,
-                name="orion",
-                bundle_location=f"{agent_id}/e70dc208",
-                version=1,
-                description="coordinator",
-                session_id="e9f8f58523cec9a57d3bdf93be543e8c",
-                created_by=source_owner,
-            ),
-        }
-    )
     artifacts = _ArtifactStore(blobs={})
-    client = TestClient(
-        _build_app(
-            conv_store,
-            agent_store=agent_store,
-            auth_provider=UnifiedAuthProvider(source="header"),
-            artifact_store=artifacts,
-        ),
-        raise_server_exceptions=False,
-    )
+    client, conv_store = _cross_user_fork(artifact_store=artifacts, source_owner=source_owner)
 
     resp = client.post(
         "/v1/sessions/e9f8f58523cec9a57d3bdf93be543e8c/fork",
