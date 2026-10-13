@@ -190,6 +190,10 @@ than shipping a hollow green.
 journey to prepare the recording, even if the earlier run left no video.
 See [`dev/recording-lanes.md`](../../../recording-lanes.md) for setup and recording
 steps, including `OMNIGENT_E2E_RECORD_DIR` (`--video on` does not work here).
+Burn step-by-step timed captions into each new after-clip with
+`dev/caption_recording.py`, then inspect the rendered actions and final outcome
+before adding it to the handoff or PR Demo. Follow the shared guide's captioning
+fallback if rendering is blocked; keep any usable footage.
 
 - Record the user action and the corrected product behavior. Tests may drive
   and verify the interaction, but the clip must show the product, not pytest,

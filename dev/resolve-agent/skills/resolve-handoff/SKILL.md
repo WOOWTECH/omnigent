@@ -186,6 +186,9 @@ readiness; name pending publication/review steps in `remaining_work`.
   its retention status; identify pending uploads and unresolved retention.
 - `recordings` — your after-fix clips (`kind: "after"`) and any recovered
   before-clips, using `{surface, kind, path, format, capture_mode, caption}`.
+  Point each new clip's `path` at the inspected MP4 with timed captions burned
+  in using `dev/caption_recording.py` per `dev/recording-lanes.md`. If captioning
+  was blocked, retain the usable clip and disclose the blocker in `evidence`.
   Follow the recording rules in Step 2B.5 on both author and review runs; in
   review mode, record the reviewed PR head. Keep recovered before-clips and
   captions unchanged. Each after-clip's caption lists the actions shown, ending

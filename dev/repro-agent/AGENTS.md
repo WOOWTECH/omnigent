@@ -639,7 +639,9 @@ saved under `recordings/<slug>/` in your workspace. **See
 [`dev/recording-lanes.md`](../recording-lanes.md) for the full how-to** — which
 surface to drive, standing the recorder's server up (build the SPA first, strip
 leaked runner env), and the per-surface mechanics (`web` / `mobile` / `terminal` /
-`cli` / `desktop`), plus the empty-recordings and caption rules. This section states only
+`cli` / `desktop`), plus the empty-recordings and caption rules. Burn timed
+step-by-step captions into each new clip using `dev/caption_recording.py` and
+inspect the render as described there before handing it off. This section states only
 *which clip repro-agent produces*. Use the selected regression test when it can
 drive that surface. Otherwise reuse or create a separate temporary recording
 driver for the observed journey. Keep its source and command in the evidence
@@ -827,7 +829,9 @@ Field meanings:
   the catalog → picker shows raw IDs"`. Phrase it for *this* clip's outcome: a
   `before` caption ends in the failure, a `fixed` caption ends in the correct
   behavior (the journey completing). Each screen claim comes from screen
-  evidence, not from a transcript or API check (Step 4). This is per-recording
+  evidence, not from a transcript or API check (Step 4). This attachment description
+  is separate from the timed captions burned into the video using
+  `dev/caption_recording.py`. This is per-recording
   (each clip drives its own steps), distinct from the bug-level `journey`
   field. `capture_mode` is one of the surface-appropriate values in
   `dev/recording-lanes.md`. Keep an authored-but-unrendered VHS tape in the

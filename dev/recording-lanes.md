@@ -168,8 +168,9 @@ same stop point.
 
 **Move the emitted clip to a stable name.** The video lands under
 `OMNIGENT_E2E_RECORD_DIR` (or the test's own dir) as a random hash name; **move**
-it (do not copy) to a stable `recordings/<slug>/<kind>-<facet>.webm` and delete
-the leftover raw dir, so the same footage isn't collected twice. If that dir has
+it (do not copy) to `recordings/<slug>/raw/<kind>-<facet>.webm`. Keep that source
+for caption rendering below and declare only the selected finished clip, so raw
+footage is retained as supporting evidence rather than attached twice. If that dir has
 **no** `.webm` after the run, the recording genuinely didn't happen (the test
 errored before opening a page, or the fixture never came online). For a test
 using the `page` fixture, retry with `--video on` and check pytest's `--output`
@@ -331,7 +332,65 @@ outcome in the caption. Check each claimed moment, especially claims that text
 or controls are absent. If the frames contradict the caption, correct it or
 re-record.
 
-For each recording, write a short **`caption`** in its handoff entry describing
+### Timed captions inside the video
+
+For every newly captured clip, **burn in step-by-step captions before declaring
+the recording**. This applies to Repro's `before`/`fixed` clips and Resolve's
+`after` clips on both the author and review paths, across all capture surfaces.
+Keep recovered before-clips unchanged. The handoff's prose `caption` appears
+below the attachment; it does not replace captions visible during playback.
+
+1. Watch the raw clip and note timestamps relative to its first frame (seconds).
+   Timing logged by the driver can help, but check it against the actual video;
+   browser creation, navigation and recording do not necessarily start together.
+2. Write `recordings/<slug>/<kind>-<facet>.cues.json`, a JSON array of
+   `{"start": 0, "end": 3.5, "text": "1. Open the model picker."}` objects.
+   Use ordered, non-overlapping intervals within the source duration. Cover each
+   meaningful action and the final observed result; leave text up long enough to
+   read (usually 2–5 seconds). Use short, plain sentences, at most three lines.
+   If the action is too fast to explain, re-record with a brief natural pause.
+3. Explain the setup that changes how to interpret the result (OS/version,
+   scripted model, injected failure, shortened timeout) in an opening cue.
+   Then describe what happens now: "2. Select the catalog", "3. The picker
+   shows raw IDs". End with the **observed** result for this attempt, including
+   limitations. A passing attempt is not proof that a reported bug never occurs.
+   Do not claim that a permission was bypassed, a command ran, or a fix worked
+   unless the footage/evidence establishes it. Label any still-image close-up,
+   speed change or cut; the helper below makes none of these edits.
+4. Render with the shared helper (Python 3.10+ standard library; requires `ffmpeg`
+   with `drawtext`, `ffprobe`, and DejaVu Sans Mono; on Ubuntu install `ffmpeg`
+   and `fonts-dejavu-core`):
+
+   ```bash
+   python3 dev/caption_recording.py \
+     --source recordings/<slug>/raw/<kind>-<facet>.webm \
+     --cues recordings/<slug>/<kind>-<facet>.cues.json \
+     --output recordings/<slug>/<kind>-<facet>.mp4
+   ```
+
+   Run the helper from the Omnigent tools checkout if the target repository is
+   different. It pads below the original screen so captions do not cover controls
+   or output, retains timing and audio, and refuses to overwrite existing files.
+   Media probes time out after 30 seconds and rendering after 10 minutes, so a
+   stalled encoder reports a captioning failure rather than blocking the agent.
+   Always render from raw footage; choose a fresh output path when revising cues.
+   Keep the raw clip, cue JSON and render command as uncommitted workspace
+   evidence. Once the selected capture is under `raw/`, retain it for rerendering;
+   do not delete it as a duplicate or declare it as another recording.
+5. Play the result and inspect the opening, each caption transition, and the
+   final frame. Confirm text is legible, fits in the band, matches the action's
+   timing, and describes only what was observed. Declare only the inspected,
+   captioned MP4 under the stable `<kind>-<facet>.mp4` name in the handoff and
+   PR Demo. CI's later media normalization preserves the burned-in text.
+
+Captioning is best effort, like capture. If the renderer, font or filter is
+unavailable, or rendering fails and cannot be repaired, keep the usable raw
+product clip under its stable name, declare it, and explain the captioning
+blocker in `evidence`. Do not discard valid footage or block the verdict, fix,
+or PR just because captions could not be rendered. Do not claim an unrendered
+cue file is a captioned recording.
+
+For each recording, also write a short **`caption`** in its handoff entry describing
 **the actions that clip performs** — the ordered steps a viewer watches, ending in
 what the clip shows: e.g. `"start a session → open the model picker → select the
 catalog → picker shows raw IDs"`. This is what a reader sees under the video on
