@@ -274,9 +274,13 @@ async def test_immediate_exit_closes_once_and_keeps_exit_evidence(
 @requires_tmux
 @pytest.mark.parametrize("cancel_stage", ["spawn", "liveness"])
 async def test_cancelled_launch_reaps_real_tmux(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, cancel_stage: str
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    cancel_stage: str,
 ) -> None:
     created = _capture_instances(monkeypatch)
+    caplog.set_level(logging.INFO, logger=registry.__name__)
     reached = asyncio.Event()
     release = asyncio.Event()
     original_launch = TerminalInstance.launch
@@ -318,6 +322,14 @@ async def test_cancelled_launch_reaps_real_tmux(
         )
         assert result.returncode != 0
         assert terminal_registry.get("owned-session", "shell", "main") is None
+        record = _launch_failed_event(caplog)
+        assert record.levelno == logging.INFO
+        assert record.attributes["launch_outcome"] == "cancelled"
+        assert record.attributes["exception_type"] == "CancelledError"
+        assert record.attributes["launch_stage"] == (
+            "terminal_spawn" if cancel_stage == "spawn" else "terminal_liveness"
+        )
+        assert record.attributes["launch_cleanup_outcome"] == "closed"
     finally:
         release.set()
         if not task.done():

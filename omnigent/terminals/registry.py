@@ -158,6 +158,10 @@ async def _close_unregistered_instance(instance: TerminalInstance) -> _Unregiste
             # The failure is read back from the task below.
             break
     if not close_task.done():
+        # A loop that closed with a pending close never runs its done callbacks.
+        _ABANDONED_CLOSES.difference_update(
+            {task for task in _ABANDONED_CLOSES if task.get_loop().is_closed()}
+        )
         _ABANDONED_CLOSES.add(close_task)
         close_task.add_done_callback(_ABANDONED_CLOSES.discard)
         close_task.add_done_callback(partial(_log_abandoned_close, instance.diagnostic_id))

@@ -66,6 +66,8 @@ async def test_terminal_retry_after_spawn_failure_has_no_orphans(
         assert all(not instance.private_dir.exists() for instance in instances)
         assert terminals.active_conversation_ids() == []
     finally:
+        with contextlib.suppress(Exception):
+            await resources.cleanup_session(session_id)
         for instance in instances:
             with contextlib.suppress(Exception):
                 await instance.close()
