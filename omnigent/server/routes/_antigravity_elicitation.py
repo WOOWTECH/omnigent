@@ -373,11 +373,8 @@ def _agy_permission_response(result: ElicitationResult) -> dict[str, Any]:
 
     ``accept`` → ``allow: True``; ``decline`` or ``cancel`` → ``allow: False``.
 
-    A persist accept (``_meta.persist`` of ``"session"`` or ``"always"``)
-    still delivers the plain ``allow: True`` here: the live-verified RPC
-    variant carries only ``allow``, and the persist side of the verdict rides
-    the TUI channel (:func:`to_tui_selection_keys` selects agy's own
-    always-allow menu entry, which owns recording the pattern).
+    RPC carries only ``allow``. The bridge sends persistent approvals solely
+    through the native menu, which records the rule and answers the step.
 
     :param result: Web-submitted elicitation verdict.
     :returns: ``{"permission": {"allow": <bool>}}``
@@ -402,15 +399,9 @@ def to_tui_selection_keys(
     """
     Map an elicitation result to the tmux keys that answer agy's TUI prompt.
 
-    The attended agy TUI maintains its own permission / question prompt IN
-    PARALLEL with the RPC trajectory step (live-verified; see
-    ``docs/claude/antigravity-rpc-spike-notes.md``). Delivering the verdict over
-    ``HandleCascadeUserInteraction`` flips the backend step but can leave that TUI
-    prompt open, stranding the terminal (and folding the next typed turn into the
-    stale prompt's buffer — #1200). So the bridge ALSO types the selection into
-    the pane via
-    :func:`omnigent.harnesses.antigravity_native.bridge.send_interaction_keys_via_tui`,
-    mirroring cursor-native. This is the pure shape-mapper for those keys.
+    Persistent approvals go directly to the native menu so it can save the rule
+    before answering the step. Other verdicts use these keys as best-effort
+    dismissal for legacy prompts left open after RPC delivery.
 
     * **permission** — agy's numbered menu, live-verified on agy 1.2.7:
       ``1`` "Yes, run command"; ``2`` "Yes, and always allow in this
@@ -422,8 +413,7 @@ def to_tui_selection_keys(
       (conversation-scoped) or ``_meta.persist == "always"`` → ``"3"``
       (settings.json); Reject → ``"4"`` ("No") — each followed by ``Enter``. The
       reject digit assumes this advertised-persist menu (all captured prompts);
-      the RPC verdict has already settled the backend, so these keystrokes are a
-      best-effort TUI dismissal.
+      rejection is a best-effort dismissal after the RPC verdict.
     * **ask_question** — type the selected option id(s) ("1".."N") then ``Enter``;
       agy's TUI numbers questions' options the same way its RPC ``selectedOptionIds``
       do. A decline/cancel (or no usable selection) presses ``Escape`` to dismiss.

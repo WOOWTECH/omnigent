@@ -481,16 +481,22 @@ async def test_permission_reject_delivers_allow_false_and_types_no() -> None:
 
 
 @pytest.mark.asyncio
-async def test_persist_accept_types_the_delivered_gates_persist_entry() -> None:
-    """A persist accept types agy's own always-allow entry for the gate."""
+@pytest.mark.parametrize("persist,digit", [("session", "2"), ("always", "3")])
+@pytest.mark.parametrize("tui_fails", [False, True])
+async def test_persist_accept_uses_only_the_native_menu(
+    persist: str, digit: str, tui_fails: bool, caplog: pytest.LogCaptureFixture
+) -> None:
+    """RPC must not close the menu before saving, even as a delivery fallback."""
     pending = _pending_permission(step_index=2, persist_pattern="ls")
     waiting = _permission_step(step_index=2, persist_pattern="ls")
-    result = ElicitationResult.model_validate(
-        {"action": "accept", "_meta": {"persist": "session"}}
-    )
+    result = ElicitationResult.model_validate({"action": "accept", "_meta": {"persist": persist}})
     request, _ = _elicitation_returner(result)
     deliver = _DeliverRecorder()
-    inject_tui = _InjectTuiRecorder()
+    inject_tui = _InjectTuiRecorder(error=RuntimeError("pane exited") if tui_fails else None)
+
+    async def inject(keys: list[str]) -> None:
+        assert deliver.calls == [], "RPC would close the native permission menu"
+        await inject_tui(keys)
 
     await bridge_interaction(
         _CASCADE,
@@ -499,13 +505,13 @@ async def test_persist_accept_types_the_delivered_gates_persist_entry() -> None:
         get_steps=_steps_returner([waiting]),
         request_elicitation=request,
         deliver=deliver,
-        inject_tui=inject_tui,
+        inject_tui=inject,
     )
 
-    # The RPC payload stays allow-only; the persist choice rides the TUI keys
-    # (option 2 = "always allow in this conversation").
-    assert deliver.calls[0]["payload"] == {"permission": {"allow": True}}
-    assert inject_tui.calls == [["2", "Enter"]]
+    assert deliver.calls == []
+    assert inject_tui.calls == [[digit, "Enter"]]
+    if tui_fails:
+        assert "not falling back to RPC" in caplog.text
 
 
 @pytest.mark.asyncio
@@ -619,7 +625,7 @@ async def test_fallback_gate_with_matching_pattern_still_types_persist_entry() -
         inject_tui=inject_tui,
     )
 
-    assert deliver.calls[0]["step_index"] == 3
+    assert deliver.calls == []
     assert inject_tui.calls == [["2", "Enter"]]
 
 

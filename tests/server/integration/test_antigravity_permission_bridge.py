@@ -58,6 +58,8 @@ async def test_permission_consent_through_reader_and_server(
         delivered.append(payload)
 
     async def inject_tui(keys: list[str]) -> None:
+        if not changed_command:
+            assert delivered == [], "RPC must not close the menu before persistence"
         typed.append(keys)
 
     collector = await start_session_stream_collector(session_id)
@@ -101,7 +103,7 @@ async def test_permission_consent_through_reader_and_server(
             )
             assert response.status_code == 202, response.text
         await asyncio.wait_for(task, timeout=5)
-        assert delivered == [{"permission": {"allow": not changed_command}}]
+        assert delivered == ([{"permission": {"allow": False}}] if changed_command else [])
         assert typed == [["4" if changed_command else digit, "Enter"]]
     finally:
         task.cancel()
