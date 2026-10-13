@@ -1,5 +1,6 @@
 """Caption validation and a real encode/decode check of timing and placement."""
 
+import errno
 import json
 import shutil
 import subprocess
@@ -7,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from dev.caption_recording import caption_recording, probe, run, validate_cues
+from dev.caption_recording import caption_recording, probe, publish_recording, run, validate_cues
 
 
 @pytest.mark.parametrize(
@@ -255,3 +256,47 @@ def test_concurrent_output_is_never_overwritten(tmp_path, monkeypatch):
     assert output.read_bytes() == b"another render"
     assert source.read_bytes() == b"source"
     assert not list(tmp_path.glob(".caption-*"))
+
+
+@pytest.mark.parametrize("failure", [None, "exists", "copy", "close"])
+def test_publish_without_hardlinks_preserves_files_on_failure(tmp_path, monkeypatch, failure):
+    rendered = tmp_path / "rendered.mp4"
+    rendered.write_bytes(b"encoded video")
+    output = tmp_path / "after.mp4"
+
+    def unsupported(*args):
+        raise OSError(errno.EOPNOTSUPP, "Hard links unavailable")
+
+    monkeypatch.setattr("dev.caption_recording.os.link", unsupported)
+    if failure == "exists":
+        output.write_bytes(b"another render")
+        with pytest.raises(FileExistsError):
+            publish_recording(rendered, output)
+        assert output.read_bytes() == b"another render"
+    elif failure == "copy":
+
+        def fail_copy(source, destination):
+            destination.write(b"partial")
+            raise OSError("Disk full")
+
+        monkeypatch.setattr("dev.caption_recording.shutil.copyfileobj", fail_copy)
+        with pytest.raises(OSError, match="Disk full"):
+            publish_recording(rendered, output)
+        assert not output.exists()
+    elif failure == "close":
+
+        def fail_close(source, destination):
+            destination.write(b"buffered")
+            # An unflushable buffer must be cleaned up when the context closes.
+            import os
+
+            os.close(destination.fileno())
+
+        monkeypatch.setattr("dev.caption_recording.shutil.copyfileobj", fail_close)
+        with pytest.raises(OSError):
+            publish_recording(rendered, output)
+        assert not output.exists()
+    else:
+        publish_recording(rendered, output)
+        assert output.read_bytes() == b"encoded video"
+    assert rendered.read_bytes() == b"encoded video"

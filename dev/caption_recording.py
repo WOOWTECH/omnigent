@@ -7,9 +7,11 @@ Requires ffmpeg with drawtext, ffprobe, and the DejaVu Sans Mono font.
 from __future__ import annotations
 
 import argparse
+import errno
 import json
 import math
 import os
+import shutil
 import subprocess
 import tempfile
 import textwrap
@@ -25,7 +27,7 @@ def run(command: list[str], *, timeout: float = 600, **kwargs: Any) -> str:
     except subprocess.TimeoutExpired as exc:
         raise RuntimeError(f"{command[0]} timed out after {timeout}s") from exc
     if result.returncode:
-        raise RuntimeError(f"{command[0]} failed: {result.stderr.strip()}")
+        raise RuntimeError(f"{command[0]} failed: {result.stderr.strip()[-4000:]}")
     return result.stdout
 
 
@@ -82,6 +84,24 @@ def validate_cues(value: Any, duration: float, columns: int) -> list[dict[str, A
         cues.append({"start": start, "end": end, "text": "\n".join(lines)})
         previous_end = end
     return cues
+
+
+def publish_recording(rendered: Path, output: Path) -> None:
+    try:
+        os.link(rendered, output)
+        return
+    except OSError as exc:
+        if exc.errno not in {errno.EPERM, errno.EOPNOTSUPP, errno.EXDEV}:
+            raise
+    # Filesystems without hard links still need exclusive destination creation.
+    with rendered.open("rb") as source:
+        destination = output.open("xb")
+        try:
+            with destination:
+                shutil.copyfileobj(source, destination)
+        except BaseException:
+            output.unlink(missing_ok=True)
+            raise
 
 
 def caption_recording(
@@ -162,7 +182,7 @@ def caption_recording(
         if abs(rendered_info["duration"] - info["duration"]) > 0.25:
             raise ValueError("Caption rendering unexpectedly changed the duration")
         # Publishing must fail if another render created the destination meanwhile.
-        os.link(rendered, output)
+        publish_recording(rendered, output)
     return {"source": str(source), "output": str(output), "cues": len(cues), **rendered_info}
 
 

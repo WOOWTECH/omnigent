@@ -348,6 +348,8 @@ below the attachment; it does not replace captions visible during playback.
    Use ordered, non-overlapping intervals within the source duration. Cover each
    meaningful action and the final observed result; leave text up long enough to
    read (usually 2–5 seconds). Use short, plain sentences, at most three lines.
+   Whitespace, including explicit newlines, is normalized; the renderer wraps
+   text to fit the caption band automatically.
    If the action is too fast to explain, re-record with a brief natural pause.
 3. Explain the setup that changes how to interpret the result (OS/version,
    scripted model, injected failure, shortened timeout) in an opening cue.
