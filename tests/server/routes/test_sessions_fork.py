@@ -2372,7 +2372,8 @@ def _cross_user_fork(
 ) -> tuple[TestClient, _ConversationStore]:
     """A header-auth client for a session whose agent belongs to *source_owner*.
 
-    ``None`` is a legacy session agent with no recorded owner.
+    ``None`` is a legacy session agent with no recorded owner. The store also
+    holds the server agent ``44b4151d…`` as a switch target.
     """
     agent_id = "30f9aa4d441e344d3eb273f8cc13e4a5"
     conv_store = _ConversationStore(
@@ -2392,6 +2393,13 @@ def _cross_user_fork(
                 bundle_location=f"{agent_id}/e70dc208",
                 session_id="e9f8f58523cec9a57d3bdf93be543e8c",
                 created_by=source_owner,
+            ),
+            "44b4151dd6cdfed6ee19430832398e05": Agent(
+                id="44b4151dd6cdfed6ee19430832398e05",
+                created_at=1,
+                name="codex",
+                bundle_location="44b4151dd6cdfed6ee19430832398e05/hash",
+                version=1,
             ),
         }
     )
@@ -2461,7 +2469,7 @@ async def test_failed_cross_user_fork_removes_its_copied_bundle() -> None:
 async def test_fork_needing_a_copy_of_a_missing_bundle_is_refused_cleanly(
     caller: str, source_owner: str | None
 ) -> None:
-    """Missing bundles fail before legacy or cross-user forks create anything."""
+    """Missing bundles fail before any fork writes; switching to another agent still works."""
     artifacts = _ArtifactStore(blobs={})
     client, conv_store = _cross_user_fork(artifact_store=artifacts, source_owner=source_owner)
 
@@ -2477,6 +2485,15 @@ async def test_fork_needing_a_copy_of_a_missing_bundle_is_refused_cleanly(
     assert error["message"] == SESSION_AGENT_BUNDLE_MISSING_MESSAGE
     assert conv_store.fork_calls == []
     assert artifacts.blobs == {}, "no copy may be written without a source"
+
+    switched = client.post(
+        "/v1/sessions/e9f8f58523cec9a57d3bdf93be543e8c/fork",
+        json={"agent_id": "44b4151dd6cdfed6ee19430832398e05"},
+        headers={"X-Forwarded-Email": caller},
+    )
+    assert switched.status_code == 201, switched.text
+    assert conv_store.fork_calls[0]["agent_id"] == "44b4151dd6cdfed6ee19430832398e05"
+    assert artifacts.blobs == {}, "a server agent is bound, not copied"
 
 
 def _attachment_fork_client(
