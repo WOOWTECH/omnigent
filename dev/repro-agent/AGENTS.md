@@ -735,7 +735,7 @@ choice:
   ],
   "test_path": "tests/e2e_ui/model_catalog/test_1234.py",
   "recordings": [
-    {"surface": "web", "kind": "before", "path": "recordings/1234/before-picker.webm", "format": "webm",
+    {"surface": "web", "kind": "before", "path": "recordings/1234/before-picker.mp4", "format": "mp4",
      "capture_mode": "playwright_ui",
      "caption": "open the model picker → select the catalog → picker shows raw IDs instead of names"}
   ],

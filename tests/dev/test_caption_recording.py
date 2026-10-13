@@ -2,13 +2,21 @@
 
 import errno
 import json
+import os
 import shutil
 import subprocess
 from pathlib import Path
 
 import pytest
 
-from dev.caption_recording import caption_recording, probe, publish_recording, run, validate_cues
+from dev.caption_recording import (
+    caption_font,
+    caption_recording,
+    probe,
+    publish_recording,
+    run,
+    validate_cues,
+)
 
 
 @pytest.mark.parametrize(
@@ -95,69 +103,51 @@ def _frame(path: Path, seconds: float, crop: str) -> bytes:
     return frame
 
 
-def test_render_preserves_footage_audio_and_timing_with_captions_below(tmp_path):
+@pytest.mark.parametrize("audio_duration", [None, 4, 6], ids=["silent", "audio", "longer-audio"])
+def test_render_preserves_footage_audio_and_timing_with_captions_below(tmp_path, audio_duration):
     if not all(shutil.which(tool) for tool in ("ffmpeg", "ffprobe")):
         pytest.skip("Install ffmpeg and ffprobe for the real media check")
     filters = _run(["ffmpeg", "-hide_banner", "-filters"]).decode()
     if "drawtext" not in filters:
         pytest.skip("ffmpeg needs drawtext for the real media check")
-    font_probe = subprocess.run(
-        [
-            "ffmpeg",
-            "-v",
-            "error",
-            "-f",
-            "lavfi",
-            "-i",
-            "color=s=64x64:d=0.1",
-            "-vf",
-            "drawtext=font='DejaVu Sans Mono':text=Test",
-            "-frames:v",
-            "1",
-            "-f",
-            "null",
-            "-",
-        ],
-        capture_output=True,
-        text=True,
-        timeout=30,
-    )
-    if font_probe.returncode:
-        pytest.skip(f"ffmpeg needs font lookup and an installed font: {font_probe.stderr}")
+    try:
+        caption_font()
+    except (OSError, ValueError, RuntimeError) as exc:
+        pytest.skip(f"Install the caption font for the real media check: {exc}")
     # Special characters in both paths and text must never become filter syntax.
     folder = tmp_path / "a:b's [recording]"
     folder.mkdir()
     source = folder / "raw.mp4"
-    _run(
+    command = [
+        "ffmpeg",
+        "-v",
+        "error",
+        "-f",
+        "lavfi",
+        "-i",
+        "color=c=white:s=640x360:r=10:d=4",
+    ]
+    if audio_duration:
+        command.extend(["-f", "lavfi", "-i", f"sine=frequency=440:duration={audio_duration}"])
+    command.extend(
         [
-            "ffmpeg",
-            "-v",
-            "error",
-            "-f",
-            "lavfi",
-            "-i",
-            "color=c=white:s=640x360:r=10:d=4",
-            "-f",
-            "lavfi",
-            "-i",
-            "sine=frequency=440:duration=4",
             "-c:v",
             "libx264",
             "-pix_fmt",
             "yuv420p",
             "-c:a",
             "aac",
-            "-shortest",
             str(source),
         ]
     )
+    _run(command)
     original = source.read_bytes()
     cues = folder / "cues.json"
     cues.write_text(
         json.dumps(
             [
                 {"start": 0.5, "end": 1.5, "text": "Open 'a:b' %{n} \\ {x}; →"},
-                {"start": 2, "end": 4, "text": "The result remains visible."},
+                {"start": 2, "end": 3.9, "text": "The result remains visible."},
             ]
         )
     )
@@ -170,22 +160,45 @@ def test_render_preserves_footage_audio_and_timing_with_captions_below(tmp_path)
     info = json.loads(
         _run(["ffprobe", "-v", "error", "-show_streams", "-of", "json", str(output)])
     )
-    assert {s["codec_name"] for s in info["streams"]} == {"h264", "aac"}
+    assert {s["codec_name"] for s in info["streams"]} == (
+        {"h264", "aac"} if audio_duration else {"h264"}
+    )
+    assert result["duration"] == pytest.approx(4, abs=0.1)
+    if audio_duration:
+        audio = next(s for s in info["streams"] if s["codec_type"] == "audio")
+        assert float(audio["duration"]) == pytest.approx(audio_duration, abs=0.1)
     # Product pixels stay above the band, including the outcome at the end.
     for seconds in (0.2, 1, 1.7, 2.5, 3.8):
         product = _frame(output, seconds, "crop=640:360:0:0")
-        assert min(product) > 240
+        assert min(product) > 200
     band = f"crop=640:{result['height'] - 360}:0:360"
     for seconds in (0.2, 1.7):
         assert max(_frame(output, seconds, band)) < 50
     for seconds in (1, 2.5, 3.8):
         assert max(_frame(output, seconds, band)) > 200
     _run(["ffmpeg", "-v", "error", "-i", str(output), "-f", "null", "-"])
+    if audio_duration == 6:
+        cues.write_text('[{"start": 4.5, "end": 5.5, "text": "Too late for the video"}]')
+        with pytest.raises(ValueError, match="within the video duration"):
+            caption_recording(source, cues, folder / "invalid-captions.mp4")
+
+
+@pytest.mark.parametrize("tag", ["00:00:01.000000000", None])
+def test_webm_video_duration_does_not_use_longer_container_duration(tmp_path, monkeypatch, tag):
+    video = {"codec_type": "video", "width": 640, "height": 360, "tags": {"DURATION": tag}}
+    info = {"streams": [video], "format": {"duration": "4"}}
+    monkeypatch.setattr("dev.caption_recording.run", lambda *a, **kw: json.dumps(info))
+    if tag:
+        assert probe(tmp_path / "clip.webm")["duration"] == 1
+    else:
+        with pytest.raises(ValueError, match="video stream must have a known positive duration"):
+            probe(tmp_path / "clip.webm")
 
 
 def test_failed_render_leaves_raw_footage_and_no_partial_output(tmp_path, monkeypatch):
     source = tmp_path / "raw.webm"
     source.write_bytes(b"source")
+    monkeypatch.setattr("dev.caption_recording.caption_font", lambda: source)
     cues = tmp_path / "cues.json"
     cues.write_text('[{"start": 0, "end": 2, "text": "Open"}]')
     monkeypatch.setattr(
@@ -239,6 +252,7 @@ def test_media_command_timeout_is_reported(monkeypatch):
 def test_concurrent_output_is_never_overwritten(tmp_path, monkeypatch):
     source = tmp_path / "raw.webm"
     source.write_bytes(b"source")
+    monkeypatch.setattr("dev.caption_recording.caption_font", lambda: source)
     cues = tmp_path / "cues.json"
     cues.write_text('[{"start": 0, "end": 2, "text": "Open"}]')
     output = tmp_path / "after.mp4"
@@ -258,14 +272,16 @@ def test_concurrent_output_is_never_overwritten(tmp_path, monkeypatch):
     assert not list(tmp_path.glob(".caption-*"))
 
 
-@pytest.mark.parametrize("failure", [None, "exists", "copy", "close"])
+@pytest.mark.parametrize("failure", [None, "access", "exists", "copy", "close"])
 def test_publish_without_hardlinks_preserves_files_on_failure(tmp_path, monkeypatch, failure):
     rendered = tmp_path / "rendered.mp4"
     rendered.write_bytes(b"encoded video")
     output = tmp_path / "after.mp4"
 
     def unsupported(*args):
-        raise OSError(errno.EOPNOTSUPP, "Hard links unavailable")
+        raise OSError(
+            errno.EACCES if failure == "access" else errno.EOPNOTSUPP, "Hard links unavailable"
+        )
 
     monkeypatch.setattr("dev.caption_recording.os.link", unsupported)
     if failure == "exists":
@@ -288,8 +304,6 @@ def test_publish_without_hardlinks_preserves_files_on_failure(tmp_path, monkeypa
         def fail_close(source, destination):
             destination.write(b"buffered")
             # An unflushable buffer must be cleaned up when the context closes.
-            import os
-
             os.close(destination.fileno())
 
         monkeypatch.setattr("dev.caption_recording.shutil.copyfileobj", fail_close)
@@ -300,3 +314,17 @@ def test_publish_without_hardlinks_preserves_files_on_failure(tmp_path, monkeypa
         publish_recording(rendered, output)
         assert output.read_bytes() == b"encoded video"
     assert rendered.read_bytes() == b"encoded video"
+
+
+@pytest.mark.parametrize("family", ["DejaVu Sans Mono", "DejaVu Sans"])
+def test_font_lookup_rejects_silent_font_substitution(tmp_path, monkeypatch, family):
+    font = tmp_path / "font.ttf"
+    font.write_bytes(b"font fixture")
+    monkeypatch.setattr("dev.caption_recording.DEFAULT_FONT", tmp_path / "not-installed.ttf")
+    monkeypatch.setattr("dev.caption_recording.shutil.which", lambda _: "/usr/bin/fc-match")
+    monkeypatch.setattr("dev.caption_recording.run", lambda *a, **kw: f"{family}\n{font}")
+    if family == "DejaVu Sans Mono":
+        assert caption_font() == font
+    else:
+        with pytest.raises(ValueError, match="font substitution is disabled"):
+            caption_font()

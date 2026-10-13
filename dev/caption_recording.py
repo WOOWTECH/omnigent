@@ -7,7 +7,6 @@ Requires ffmpeg with drawtext, ffprobe, and the DejaVu Sans Mono font.
 from __future__ import annotations
 
 import argparse
-import errno
 import json
 import math
 import os
@@ -17,6 +16,22 @@ import tempfile
 import textwrap
 from pathlib import Path
 from typing import Any
+
+DEFAULT_FONT = Path("/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf")
+
+
+def caption_font() -> Path:
+    if DEFAULT_FONT.is_file():
+        return DEFAULT_FONT
+    if shutil.which("fc-match"):
+        match = run(
+            ["fc-match", "--format", "%{family}\n%{file}", "DejaVu Sans Mono"], timeout=5
+        ).splitlines()
+        if len(match) == 2 and match[0] == "DejaVu Sans Mono" and Path(match[1]).is_file():
+            return Path(match[1])
+    raise ValueError(
+        "Install DejaVu Sans Mono (fonts-dejavu-core on Ubuntu); font substitution is disabled"
+    )
 
 
 def run(command: list[str], *, timeout: float = 600, **kwargs: Any) -> str:
@@ -53,9 +68,15 @@ def probe(source: Path) -> dict[str, Any]:
     width, height = int(video.get("width") or 0), int(video.get("height") or 0)
     if width <= 0 or height <= 0:
         raise ValueError("Source video must have known positive dimensions")
-    duration = float(info.get("format", {}).get("duration") or video.get("duration") or 0)
+    duration = float(video.get("duration") or 0)
+    if not duration:
+        # WebM exposes per-stream duration as a tag; container duration may include longer audio.
+        tag = (video.get("tags") or {}).get("DURATION")
+        if tag:
+            hours, minutes, seconds = tag.split(":")
+            duration = float(hours) * 3600 + float(minutes) * 60 + float(seconds)
     if not math.isfinite(duration) or duration <= 0:
-        raise ValueError("Source must have a known positive duration")
+        raise ValueError("Source video stream must have a known positive duration")
     return {"width": width, "height": height, "duration": duration}
 
 
@@ -90,9 +111,10 @@ def publish_recording(rendered: Path, output: Path) -> None:
     try:
         os.link(rendered, output)
         return
-    except OSError as exc:
-        if exc.errno not in {errno.EPERM, errno.EOPNOTSUPP, errno.EXDEV}:
-            raise
+    except FileExistsError:
+        raise
+    except OSError:
+        pass
     # Filesystems without hard links still need exclusive destination creation.
     with rendered.open("rb") as source:
         destination = output.open("xb")
@@ -133,12 +155,13 @@ def caption_recording(
     # text. expansion=none makes expressions such as %{...} literal captions.
     with tempfile.TemporaryDirectory(prefix=".caption-", dir=output.parent) as directory:
         temporary = Path(directory)
+        shutil.copyfile(caption_font(), temporary / "caption-font.ttf")
         filters = [f"pad={width}:{height + band}:0:0:color=0x111827", "setsar=1"]
         for index, cue in enumerate(cues):
             name = f"cue-{index}.txt"
             (temporary / name).write_text(cue["text"], encoding="utf-8")
             filters.append(
-                f"drawtext=font='DejaVu Sans Mono':textfile={name}:expansion=none:"
+                f"drawtext=fontfile=caption-font.ttf:textfile={name}:expansion=none:"
                 f"fontsize={font_size}:fontcolor=white:line_spacing=4:"
                 f"x={margin}:y={height + margin}:"
                 f"enable='gte(t,{cue['start']})*lt(t,{cue['end']})'"

@@ -49,7 +49,7 @@ the message. Same discipline as repro-agent:
     {"surface": "web", "kind": "before", "path": "recordings/1234/before-picker.webm", "format": "webm",
      "capture_mode": "playwright_ui",
      "caption": "open the model picker → select the catalog → picker shows raw IDs"},
-    {"surface": "web", "kind": "after", "path": "recordings/1234/after-picker.webm", "format": "webm",
+    {"surface": "web", "kind": "after", "path": "recordings/1234/after-picker.mp4", "format": "mp4",
      "capture_mode": "playwright_ui",
      "caption": "open the model picker → select the catalog → picker now shows friendly names"}
   ],
