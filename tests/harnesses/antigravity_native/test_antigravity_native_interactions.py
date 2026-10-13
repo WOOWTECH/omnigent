@@ -40,7 +40,7 @@ from omnigent.harnesses.antigravity_native.interactions import (
     bridge_interaction,
 )
 from omnigent.harnesses.antigravity_native.rpc import AntigravityRpcError
-from omnigent.harnesses.antigravity_native.steps import PendingInteraction
+from omnigent.harnesses.antigravity_native.steps import PendingInteraction, pending_interaction
 from omnigent.server.schemas import ElicitationRequestParams, ElicitationResult
 
 _CASCADE = "test-cascade-id"
@@ -137,22 +137,9 @@ def _pending_question(*, step_index: int) -> PendingInteraction:
     :param step_index: The captured ``step_index`` (may be stale by delivery).
     :returns: A ``PendingInteraction`` of kind ``"ask_question"``.
     """
-    return PendingInteraction(
-        kind="ask_question",
-        trajectory_id=_TRAJ,
-        step_index=step_index,
-        spec={
-            "questions": [
-                {
-                    "question": "Pick one",
-                    "options": [
-                        {"id": "1", "text": "First"},
-                        {"id": "2", "text": "Second"},
-                    ],
-                }
-            ]
-        },
-    )
+    pending = pending_interaction(_question_step(step_index=step_index))
+    assert pending is not None
+    return pending
 
 
 def _pending_permission(
@@ -166,16 +153,11 @@ def _pending_permission(
         always-allow persist choice for this pattern.
     :returns: A ``PendingInteraction`` of kind ``"permission"``.
     """
-    spec: dict[str, Any] = {"resource": {"action": "command", "target": "ls -la"}}
-    if persist_pattern is not None:
-        spec["persistSuggestionType"] = "PERSIST_SUGGESTION_TYPE_SUGGESTED"
-        spec["suggestedPersistPattern"] = persist_pattern
-    return PendingInteraction(
-        kind="permission",
-        trajectory_id=_TRAJ,
-        step_index=step_index,
-        spec=spec,
+    pending = pending_interaction(
+        _permission_step(step_index=step_index, persist_pattern=persist_pattern)
     )
+    assert pending is not None
+    return pending
 
 
 class _DeliverRecorder:
@@ -330,22 +312,17 @@ async def test_happy_path_delivers_selected_option_to_fresh_step() -> None:
 
 
 @pytest.mark.asyncio
-async def test_fallback_question_types_keys_against_the_surfaced_spec() -> None:
-    """Typed ask_question digits stay consistent with the delivered RPC payload.
-
-    agy's real fallback re-asks the same gate, so the surfaced and delivered
-    specs normally share one option set. This uses a synthetic divergent
-    fallback ("Second" is id "1" there, not "2") only to expose a regression:
-    the typed digit must equal the option id the RPC payload carries -- both
-    resolved against the surfaced spec the user answered -- so the pane and
-    backend can never disagree.
-    """
+async def test_changed_fallback_question_requires_a_new_answer() -> None:
+    """Do not reuse an answer when the question's option meanings change."""
     pending = _pending_question(step_index=3)
     fallback = _question_step(
         step_index=4,
         options=[{"id": "1", "text": "Second"}, {"id": "2", "text": "Third"}],
     )
-    request, _ = _elicitation_returner(ElicitationResult(action="accept", content={"0": "Second"}))
+    request, elicit_calls = _elicitation_returner(
+        ElicitationResult(action="accept", content={"0": "Second"}),
+        ElicitationResult(action="accept", content={"0": "Second"}),
+    )
     deliver = _DeliverRecorder()
     inject_tui = _InjectTuiRecorder()
 
@@ -359,9 +336,14 @@ async def test_fallback_question_types_keys_against_the_surfaced_spec() -> None:
         inject_tui=inject_tui,
     )
 
+    assert [call[0] for call in elicit_calls] == [
+        agy_elicitation_id(_CASCADE, _TRAJ, 3),
+        agy_elicitation_id(_CASCADE, _TRAJ, 4),
+    ]
+    assert len(deliver.calls) == 1
     assert deliver.calls[0]["step_index"] == 4
-    assert deliver.calls[0]["payload"]["askQuestion"]["responses"][0]["selectedOptionIds"] == ["2"]
-    assert inject_tui.calls == [["2", "Enter"]]
+    assert deliver.calls[0]["payload"]["askQuestion"]["responses"][0]["selectedOptionIds"] == ["1"]
+    assert inject_tui.calls == [["1", "Enter"]]
 
 
 # ---------------------------------------------------------------------------
@@ -527,21 +509,43 @@ async def test_persist_accept_types_the_delivered_gates_persist_entry() -> None:
 
 
 @pytest.mark.asyncio
-async def test_fallback_gate_without_persist_advertisement_types_plain_approve() -> None:
-    """TUI keys follow the DELIVERED gate's spec, not the stale captured one.
-
-    The surfaced step advertised a persist pattern but timed out, and the
-    fallback same-kind gate does not advertise one — so a persist verdict must
-    type the plain "Yes", never a persist entry the on-screen menu lacks.
-    """
+@pytest.mark.parametrize("persist", [None, "session", "always"])
+@pytest.mark.parametrize("changed", ["command", "pattern", "no_persist"])
+async def test_changed_permission_requires_fresh_consent(
+    persist: str | None, changed: str
+) -> None:
+    """An old approval must never authorize a changed prompt, even once."""
     pending = _pending_permission(step_index=2, persist_pattern="ls")
-    fallback = _permission_step(step_index=3)  # re-asked without the persist offer
-    result = ElicitationResult.model_validate(
-        {"action": "accept", "_meta": {"persist": "session"}}
+    fallback = _permission_step(
+        step_index=3,
+        persist_pattern=None
+        if changed == "no_persist"
+        else "rm"
+        if changed == "pattern"
+        else "ls",
     )
-    request, _ = _elicitation_returner(result)
+    if changed == "command":
+        fallback["requestedInteraction"]["permission"]["resource"]["target"] = "ls /private"
+    result = ElicitationResult.model_validate(
+        {"action": "accept", **({"_meta": {"persist": persist}} if persist else {})}
+    )
     deliver = _DeliverRecorder()
     inject_tui = _InjectTuiRecorder()
+    elicit_calls: list[str] = []
+
+    async def request(eid: str, params: ElicitationRequestParams) -> ElicitationResult:
+        elicit_calls.append(eid)
+        # Neither channel may consume the old approval before the new answer.
+        assert deliver.calls == []
+        assert inject_tui.calls == []
+        if len(elicit_calls) == 1:
+            return result
+        assert params.model_extra is not None
+        assert (
+            params.model_extra["command"]
+            == fallback["requestedInteraction"]["permission"]["resource"]["target"]
+        )
+        return ElicitationResult(action="decline")
 
     await bridge_interaction(
         _CASCADE,
@@ -553,24 +557,22 @@ async def test_fallback_gate_without_persist_advertisement_types_plain_approve()
         inject_tui=inject_tui,
     )
 
+    assert elicit_calls == [
+        agy_elicitation_id(_CASCADE, _TRAJ, 2),
+        agy_elicitation_id(_CASCADE, _TRAJ, 3),
+    ]
+    assert len(deliver.calls) == 1
     assert deliver.calls[0]["step_index"] == 3
-    assert inject_tui.calls == [["1", "Enter"]]
+    assert deliver.calls[0]["payload"] == {"permission": {"allow": False}}
+    assert inject_tui.calls == [["4", "Enter"]]
 
 
 @pytest.mark.asyncio
-async def test_fallback_gate_with_different_pattern_types_plain_approve() -> None:
-    """A persist accept never always-allows a gate the user did not consent to.
-
-    The surfaced gate advertised persist for ``ls`` but timed out; the fallback
-    same-kind gate advertises persist for a DIFFERENT command (``rm``). Both
-    offer a persist menu, so without binding consent to the surfaced pattern a
-    stale accept would durably always-allow ``rm``. The bridge must downgrade to
-    the plain "Yes", granting only the one-time run.
-    """
+async def test_changed_prompt_reusing_step_ids_does_not_deliver() -> None:
+    """A changed prompt cannot inherit the verdict cached under the same ids."""
     pending = _pending_permission(step_index=2, persist_pattern="ls")
-    fallback = _permission_step(step_index=3, persist_pattern="rm")
-    result = ElicitationResult.model_validate({"action": "accept", "_meta": {"persist": "always"}})
-    request, _ = _elicitation_returner(result)
+    changed = _permission_step(step_index=2, persist_pattern="rm")
+    request, calls = _elicitation_returner(ElicitationResult(action="accept"))
     deliver = _DeliverRecorder()
     inject_tui = _InjectTuiRecorder()
 
@@ -578,14 +580,15 @@ async def test_fallback_gate_with_different_pattern_types_plain_approve() -> Non
         _CASCADE,
         pending,
         port=52548,
-        get_steps=_steps_returner([fallback]),
+        get_steps=_steps_returner([changed]),
         request_elicitation=request,
         deliver=deliver,
         inject_tui=inject_tui,
     )
 
-    assert deliver.calls[0]["step_index"] == 3
-    assert inject_tui.calls == [["1", "Enter"]]
+    assert len(calls) == 1
+    assert deliver.calls == []
+    assert inject_tui.calls == []
 
 
 @pytest.mark.asyncio

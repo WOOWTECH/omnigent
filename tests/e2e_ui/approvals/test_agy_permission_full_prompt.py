@@ -27,7 +27,6 @@ equivalent persist-capable prompt.
 
 from __future__ import annotations
 
-import contextlib
 import json
 import re
 import threading
@@ -98,6 +97,7 @@ def _park_agy_permission_elicitation(
         pending["step_index"],
     )
     body = {"elicitation_id": elicitation_id, "params": params.model_dump()}
+    result_holder["elicitation_id"] = elicitation_id
 
     def _post_hook() -> None:
         try:
@@ -108,6 +108,7 @@ def _park_agy_permission_elicitation(
             )
             resp.raise_for_status()
             result_holder["status_code"] = resp.status_code
+            result_holder["verdict"] = resp.json()
         except Exception as exc:
             result_holder["error"] = exc
 
@@ -150,6 +151,8 @@ def _open_pending_agy_card(
     base_url: str,
     session_id: str,
     result_holder: dict,
+    *,
+    surface: str = "chat",
 ):
     """Navigate to the session and return the pending agy permission card."""
 
@@ -158,7 +161,7 @@ def _open_pending_agy_card(
         return bool(_pending_elicitations(base_url, session_id))
 
     _wait_for(_elicitation_ready, message="agy permission elicitation did not appear")
-    page.goto(f"{base_url}/c/{session_id}")
+    page.goto(f"{base_url}/inbox" if surface == "inbox" else f"{base_url}/c/{session_id}")
     card = (
         page.locator(f'{_APPROVAL_CARD}[data-state="pending"]')
         .filter(has_text="Antigravity")
@@ -180,24 +183,26 @@ def _reject_and_join(
     When setup failed before the card rendered, resolve the parked elicitation
     directly so the hook long-poll thread cannot leak onto the shared server.
     """
-    if card is None:
-        with contextlib.suppress(Exception):
-            for pending in _pending_elicitations(base_url, session_id):
-                eid = pending.get("elicitation_id")
-                if eid:
-                    httpx.post(
-                        f"{base_url}/v1/sessions/{session_id}/elicitations/{eid}/resolve",
-                        json={"action": "reject"},
-                        timeout=10.0,
-                    )
+    eid = result_holder["elicitation_id"]
+    try:
+        if card is None:
+            response = httpx.post(
+                f"{base_url}/v1/sessions/{session_id}/elicitations/{eid}/resolve",
+                json={"action": "decline"},
+                timeout=10.0,
+            )
+            response.raise_for_status()
+        elif card.get_attribute("data-state") == "pending":
+            card.get_by_role("button", name="Reject", exact=True).click()
+        _wait_for(
+            lambda: all(
+                event.get("elicitation_id") != eid
+                for event in _pending_elicitations(base_url, session_id)
+            ),
+            message="agy permission elicitation did not clear",
+        )
+    finally:
         hook_thread.join(timeout=30)
-        return
-    card.get_by_role("button", name="Reject", exact=True).click()
-    _wait_for(
-        lambda: not _pending_elicitations(base_url, session_id),
-        message="agy permission elicitation did not clear after Reject",
-    )
-    hook_thread.join(timeout=30)
     assert not hook_thread.is_alive(), "agy elicitation hook POST did not settle"
     _require_no_hook_error(result_holder)
 
@@ -233,6 +238,59 @@ def test_agy_permission_card_offers_always_allow_choice(
         expect(always_allow.first).to_be_visible(timeout=_AFFORDANCE_TIMEOUT_MS)
     finally:
         _reject_and_join(card, base_url, session_id, hook_thread, result_holder)
+
+
+@pytest.mark.timeout(120)
+@pytest.mark.parametrize("surface", ["chat", "inbox"])
+@pytest.mark.parametrize("persist", ["session", "always"])
+def test_agy_permission_persist_request_round_trip(
+    page: Page,
+    seeded_session: tuple[str, str],
+    surface: str,
+    persist: str,
+) -> None:
+    """Both approval surfaces send the chosen scope without claiming it was saved."""
+    base_url, session_id = seeded_session
+    result_holder: dict = {}
+    hook_thread = _park_agy_permission_elicitation(base_url, session_id, result_holder)
+    try:
+        card = _open_pending_agy_card(page, base_url, session_id, result_holder, surface=surface)
+        expect(card).to_contain_text("New sessions have separate rules")
+        card.get_by_test_id(f"approval-card-agy-{persist}-allow").click()
+        hook_thread.join(timeout=30)
+        assert not hook_thread.is_alive(), "agy elicitation hook POST did not settle"
+        _require_no_hook_error(result_holder)
+        assert result_holder["verdict"] == {
+            "action": "accept",
+            "content": None,
+            "_meta": {"persist": persist},
+        }
+        if surface == "chat":
+            responded = page.locator(f'{_APPROVAL_CARD}[data-state="responded"]').filter(
+                has_text="Antigravity"
+            )
+            label = "Session allow requested" if persist == "session" else "Always allow requested"
+            expect(responded).to_contain_text(label)
+            expect(responded).not_to_contain_text("Always allowed")
+        else:
+            expect(card).not_to_be_visible()
+    finally:
+        if hook_thread.is_alive():
+            _reject_and_join(None, base_url, session_id, hook_thread, result_holder)
+
+
+@pytest.mark.timeout(120)
+def test_agy_permission_cleanup_without_rendered_card(
+    seeded_session: tuple[str, str],
+) -> None:
+    """A setup failure can settle its own parked hook without a browser card."""
+    base_url, session_id = seeded_session
+    result_holder: dict = {}
+    hook_thread = _park_agy_permission_elicitation(base_url, session_id, result_holder)
+    _wait_for(lambda: bool(_pending_elicitations(base_url, session_id)))
+    _reject_and_join(None, base_url, session_id, hook_thread, result_holder)
+    assert not hook_thread.is_alive()
+    assert result_holder["verdict"] == {"action": "decline", "content": None}
 
 
 @pytest.mark.timeout(120)

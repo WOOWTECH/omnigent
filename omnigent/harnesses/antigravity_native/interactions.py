@@ -311,8 +311,7 @@ def _waiting_step_at(
     Pins verdict delivery to the step the elicitation was surfaced for rather than
     the freshest WAITING step (which could be a different gate that appeared
     meanwhile). Returns ``None`` when that step is no longer WAITING (timed out or
-    answered), letting the caller fall back to ``_freshest_waiting`` for agy's
-    same-gate timeout-retry.
+    answered), letting the caller inspect ``_freshest_waiting`` for a retry.
 
     :param steps: Trajectory steps snapshot.
     :param trajectory_id: The surfaced step's trajectory id.
@@ -350,9 +349,10 @@ async def bridge_interaction(
     2. If the verdict is ``None`` (the human timed out or cancelled), **returns
        without delivering** — agy's own WAITING timeout handles the dangling step;
        forcing a deny here is out of scope.
-    3. **Re-reads the freshest WAITING step** and delivers against THAT step's
-       ids (never the captured ones — they may be stale because agy timed out and
-       retried while the human deliberated). If no WAITING step remains, returns.
+    3. Re-reads the WAITING step, preferring the captured ids. A retry at new
+       ids may reuse the answer only when its kind and spec are unchanged;
+       a changed prompt requires a new elicitation. If no WAITING step remains,
+       returns without delivering.
     4. On the overloaded ``"input not registered"`` error (the targeted step
        timed out before delivery), re-reads for a NEW higher-index WAITING step;
        if found, re-surfaces the elicitation against it (next iteration). Any
@@ -407,12 +407,8 @@ async def bridge_interaction(
             )
             return
 
-        # Re-read the steps BEFORE delivering: the captured ids may be stale if agy
-        # timed out + retried while the human deliberated. PIN to the step we
-        # surfaced if it is STILL WAITING — deliver THIS verdict to THAT gate, never
-        # to a different higher-index gate that appeared meanwhile (#1472 review).
-        # Only when our captured step is gone (timed out → ERROR) do we fall back to
-        # the freshest WAITING, which is agy's same-gate timeout-retry (§2.1).
+        # Prefer the surfaced step. A timed-out step may have a newer retry,
+        # but being the same kind alone does not make it the same prompt.
         steps = await get_steps()
         fresh = _waiting_step_at(
             steps, trajectory_id=current["trajectory_id"], step_index=current["step_index"]
@@ -428,7 +424,27 @@ async def bridge_interaction(
             )
             return
 
-        payload = to_interaction_payload(current["kind"], result, current["spec"])
+        if fresh["kind"] != current["kind"] or fresh["spec"] != current["spec"]:
+            if (fresh["trajectory_id"], fresh["step_index"]) == (
+                current["trajectory_id"],
+                current["step_index"],
+            ):
+                # Reusing this id could replay the old cached verdict.
+                _logger.warning(
+                    "agy interaction changed under elicitation %s; not delivering", eid
+                )
+                return
+            _logger.info(
+                "agy interaction changed after elicitation %s; requesting fresh consent "
+                "(cascade=%s, step=%d)",
+                eid,
+                cascade_id,
+                fresh["step_index"],
+            )
+            current = fresh
+            continue
+
+        payload = to_interaction_payload(fresh["kind"], result, fresh["spec"])
         try:
             await deliver(
                 port,
@@ -440,16 +456,7 @@ async def bridge_interaction(
             # The RPC answered the backend step, but the attended agy TUI keeps
             # its own prompt open in parallel. Type the verdict's selection into
             # the pane so the next turn does not land in the stale prompt's buffer.
-            if fresh["kind"] == "permission":
-                # The on-screen menu follows the delivered gate, but persist only
-                # when its pattern matches the surfaced consent, so a stale accept
-                # can never durably grant a different command.
-                keys = to_tui_selection_keys(
-                    "permission", result, fresh["spec"], consented_spec=current["spec"]
-                )
-            else:
-                # Typed digits must match the option ids the RPC payload used.
-                keys = to_tui_selection_keys(fresh["kind"], result, current["spec"])
+            keys = to_tui_selection_keys(fresh["kind"], result, fresh["spec"])
             if keys:
                 try:
                     await inject_tui(keys)

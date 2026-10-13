@@ -38,6 +38,10 @@ view appear in the session.
 **CLI:** run `omnigent <name>` from the matrix below; add `--resume` with or
 without a session ID to resume.
 
+**Approval inbox:** open Inbox in the sidebar to answer a pending permission
+without opening its session. Antigravity's Chat and Inbox cards both offer
+the advertised session and saved-rule choices.
+
 **Interrupted session:** observe startup before the first message, a running
 turn, and Stop separately. For an offline host use the reconnect paths in
 [sessions](./sessions.md); a detached terminal has its own paths in
@@ -76,6 +80,14 @@ verify-env run -- python -m pytest <test> --ui-skip-build --video=on \
 ```
 
 Cross-harness journeys:
+
+- **Antigravity permission choices (Chat and Inbox):**
+  `tests/e2e_ui/approvals/test_agy_permission_full_prompt.py::test_agy_permission_persist_request_round_trip`
+  uses a recorded permission prompt and the real server to check both choices
+  on both surfaces. Chat records the choice as requested, since Antigravity
+  does not confirm rule persistence. This does not run a live Antigravity
+  terminal or prove that a rule is saved. Saved rules belong to the current
+  Omnigent session; new sessions have separate settings.
 
 - **`needs-auth`:**
   `tests/e2e_ui/start_session/test_harness_credential.py::test_needs_auth_harness_is_disabled_with_repair_tooltip`,

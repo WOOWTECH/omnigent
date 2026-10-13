@@ -379,7 +379,7 @@ export function ApprovalCard({
             size="sm"
             variant="outline"
             onClick={() => submitPersist("session")}
-            title={`Antigravity won't ask again for “${agyPermission.alwaysAllowPattern}” in this conversation`}
+            title={`Ask Antigravity to allow “${agyPermission.alwaysAllowPattern}” for this conversation`}
             data-testid="approval-card-agy-session-allow"
             componentId="approval.approve_session_agy"
           >
@@ -394,7 +394,7 @@ export function ApprovalCard({
             size="sm"
             variant="outline"
             onClick={() => submitPersist("always")}
-            title={`Antigravity will persist always-allowing “${agyPermission.alwaysAllowPattern}” to its settings`}
+            title={`Ask Antigravity to save “${agyPermission.alwaysAllowPattern}” for this Omnigent session, including after a restart`}
             data-testid="approval-card-agy-always-allow"
             componentId="approval.approve_always_agy"
           >
@@ -581,6 +581,12 @@ export function ApprovalCard({
       label = rememberTarget
         ? `Approved · won't ask again for ${rememberTarget}`
         : "Approved · won't ask again";
+    } else if (
+      phase === "agy_permission" &&
+      (acceptedPersist === "session" || acceptedPersist === "always")
+    ) {
+      icon = <InfoIcon className="size-4 text-muted-foreground" />;
+      label = acceptedPersist === "session" ? "Session allow requested" : "Always allow requested";
     } else if (acceptedPersist === "session") {
       icon = <CheckIcon className="size-4 text-success" />;
       label = "Approved for this session";
@@ -744,6 +750,12 @@ export function ApprovalCard({
             {agyPermission?.actionDescription && (
               <span className="text-sm text-muted-foreground" data-testid="agy-action-description">
                 {agyPermission.actionDescription}
+              </span>
+            )}
+            {agyPermission?.alwaysAllowPattern && (
+              <span className="text-sm text-muted-foreground">
+                Always allow saves a rule for this Omnigent session. New sessions have separate
+                rules.
               </span>
             )}
             {formattedPreview && (

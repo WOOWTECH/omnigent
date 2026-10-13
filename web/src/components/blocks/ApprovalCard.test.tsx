@@ -616,7 +616,7 @@ describe("ApprovalCard — Antigravity permission prompt details", () => {
     expect(screen.getByRole("button", { name: /^approve$/i })).toBeDefined();
   });
 
-  it("labels an always-allow accept on the responded pill", () => {
+  it("records an always-allow request without claiming it was saved", () => {
     render(
       <ApprovalCard
         {...baseProps}
@@ -626,10 +626,10 @@ describe("ApprovalCard — Antigravity permission prompt details", () => {
       />,
     );
 
-    expect(screen.getByText(/always allowed/i)).toBeDefined();
+    expect(screen.getByText("Always allow requested")).toBeDefined();
   });
 
-  it("labels a session-scoped accept on the responded pill", () => {
+  it("records a session allow request without claiming it was saved", () => {
     render(
       <ApprovalCard
         {...baseProps}
@@ -639,7 +639,7 @@ describe("ApprovalCard — Antigravity permission prompt details", () => {
       />,
     );
 
-    expect(screen.getByText(/approved for this session/i)).toBeDefined();
+    expect(screen.getByText("Session allow requested")).toBeDefined();
   });
 });
 

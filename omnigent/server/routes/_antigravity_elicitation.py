@@ -398,8 +398,6 @@ def to_tui_selection_keys(
     kind: str,
     result: ElicitationResult,
     spec: dict[str, Any],
-    *,
-    consented_spec: dict[str, Any] | None = None,
 ) -> list[str]:
     """
     Map an elicitation result to the tmux keys that answer agy's TUI prompt.
@@ -432,11 +430,9 @@ def to_tui_selection_keys(
 
     :param kind: Interaction kind — ``"ask_question"`` or ``"permission"``.
     :param result: The web-submitted elicitation verdict.
-    :param spec: The original ``askQuestion`` / ``permission`` block (used to map
-        an ask_question answer's option labels back to ids).
-    :param consented_spec: The permission block the user actually saw. When
-        given, a persist accept is honored only if ``spec`` advertises the same
-        pattern the user consented to; defaults to ``spec`` (no fallback gate).
+    :param spec: The consented ``askQuestion`` / ``permission`` block. The bridge
+        verifies it still matches the delivered prompt before answering either
+        channel; questions use it to map answer labels back to option ids.
     :returns: Ordered tmux key arguments to send into the agy pane (possibly
         empty when no keystroke is warranted, e.g. an unsupported kind).
     :raises ValueError: When ``kind`` is not ``"ask_question"`` or ``"permission"``.
@@ -445,32 +441,16 @@ def to_tui_selection_keys(
         if result.action != "accept":
             return [_AGY_TUI_PERMISSION_REJECT_OPTION, _AGY_TUI_CONFIRM_KEY]
         persist = result.meta.get("persist") if result.meta is not None else None
-        delivered_pattern = _suggested_persist_pattern(spec)
-        # Bind persist to the pattern the user consented to: a fallback gate may
-        # always-allow only when it advertises that same pattern, never another.
-        consented_pattern = (
-            _suggested_persist_pattern(consented_spec)
-            if consented_spec is not None
-            else delivered_pattern
-        )
-        if delivered_pattern is not None and delivered_pattern == consented_pattern:
+        if _suggested_persist_pattern(spec) is not None:
             if persist == "session":
                 return [_AGY_TUI_PERMISSION_SESSION_ALLOW_OPTION, _AGY_TUI_CONFIRM_KEY]
             if persist == "always":
                 return [_AGY_TUI_PERMISSION_PERSIST_ALLOW_OPTION, _AGY_TUI_CONFIRM_KEY]
         if persist in ("session", "always"):
-            if delivered_pattern is None:
-                _logger.info(
-                    "agy persist accept downgraded to one-time approve: the "
-                    "delivered gate advertises no always-allow entry"
-                )
-            else:
-                _logger.info(
-                    "agy persist accept downgraded to one-time approve: delivered "
-                    "pattern %r does not match consented pattern %r",
-                    delivered_pattern,
-                    consented_pattern,
-                )
+            _logger.info(
+                "agy persist accept downgraded to one-time approve: the "
+                "consented gate advertises no always-allow entry"
+            )
         return [_AGY_TUI_PERMISSION_APPROVE_OPTION, _AGY_TUI_CONFIRM_KEY]
     if kind == "ask_question":
         return _agy_ask_question_tui_keys(result, spec)
