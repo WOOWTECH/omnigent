@@ -126,10 +126,11 @@ class _UnregisteredCleanup:
 
 
 async def _close_unregistered_instance(instance: TerminalInstance) -> _UnregisteredCleanup:
-    """Close an instance that never reached the registry, bounded by ``_CLOSE_TIMEOUT_S``.
+    """Close an instance that never reached the registry, within two ``_CLOSE_TIMEOUT_S`` windows.
 
     Keeps closing while the caller is being cancelled, so the tmux server and
     private directory are not orphaned; ``caller_cancelled`` reports that cancellation.
+    The first window covers the close itself, the second the grace after cancelling it.
     """
     close_task = asyncio.ensure_future(instance.close())
     current = asyncio.current_task()
@@ -144,7 +145,7 @@ async def _close_unregistered_instance(instance: TerminalInstance) -> _Unregiste
         except asyncio.TimeoutError:
             if close_task.done() or timed_out:
                 break
-            # Like ``asyncio.wait_for``: cancel the close, then let it unwind for one more window.
+            # Cancel the close as ``asyncio.wait_for`` would, but wait only one more window for it.
             timed_out = True
             close_task.cancel()
             deadline = loop.time() + _CLOSE_TIMEOUT_S
@@ -335,7 +336,7 @@ class TerminalRegistry:
             if not await created.instance.is_alive():
                 created.instance.lifecycle_trace.note_exit()
                 raise TerminalExitedDuringLaunch(created.instance)
-        except BaseException as exc:
+        except (Exception, asyncio.CancelledError) as exc:
             # Until registration, no shutdown sweep can discover this instance.
             cleanup = await _close_unregistered_instance(created.instance)
             cancelled = isinstance(exc, asyncio.CancelledError)

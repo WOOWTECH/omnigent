@@ -169,19 +169,21 @@ async def test_close_outliving_its_grace_is_retained_and_logged(
     monkeypatch.setattr(registry, "_CLOSE_TIMEOUT_S", 0.02)
     caplog.set_level(logging.WARNING, logger=registry.__name__)
 
+    preexisting_closes = set(registry._ABANDONED_CLOSES)
     with pytest.raises(FileNotFoundError) as raised:
         await TerminalRegistry().launch("owned-session", "shell", "main", _spec(tmp_path))
 
-    assert raised.value is original
-    assert _launch_failed_event(caplog).attributes["launch_cleanup_outcome"] == "timed_out"
-    (abandoned,) = registry._ABANDONED_CLOSES
-    assert not abandoned.done()
-
-    release.set()
+    try:
+        assert raised.value is original
+        assert _launch_failed_event(caplog).attributes["launch_cleanup_outcome"] == "timed_out"
+        (abandoned,) = registry._ABANDONED_CLOSES - preexisting_closes
+        assert not abandoned.done()
+    finally:
+        release.set()
     await asyncio.wait({abandoned}, timeout=5)
     await asyncio.sleep(0)
     assert abandoned.done()
-    assert not registry._ABANDONED_CLOSES
+    assert abandoned not in registry._ABANDONED_CLOSES
     messages = [record.getMessage() for record in caplog.records]
     assert any(
         "Abandoned terminal close" in m and instance.diagnostic_id in m and "RuntimeError" in m
