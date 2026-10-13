@@ -2453,16 +2453,14 @@ async def test_failed_cross_user_fork_removes_its_copied_bundle() -> None:
     ],
     ids=["legacy-own-session-null-owner", "cross-user"],
 )
-async def test_fork_of_copy_needing_agent_with_pruned_bundle_is_not_internal_error(
+async def test_fork_needing_a_copy_of_a_missing_bundle_is_refused_cleanly(
     caller: str, source_owner: str | None
 ) -> None:
-    """A copy-needing fork whose source agent bundle blob is gone must not 500.
-
-    A legacy session agent with no recorded owner and a cross-user fork both
-    need their own copy of the bundle, so both read the missing blob.
-    """
+    """A legacy session agent with no recorded owner and a cross-user fork both
+    need their own copy of the bundle. When that blob is gone, the fork is
+    refused as ``session_agent_missing`` before anything is created, so the
+    dialog can offer another agent instead of an internal error."""
     agent_id = "30f9aa4d441e344d3eb273f8cc13e4a5"
-    location = f"{agent_id}/e70dc208"
     conv_store = _ConversationStore(
         conversations={"e9f8f58523cec9a57d3bdf93be543e8c": _make_conversation(agent_id=agent_id)},
         items_by_conv={
@@ -2477,7 +2475,7 @@ async def test_fork_of_copy_needing_agent_with_pruned_bundle_is_not_internal_err
                 id=agent_id,
                 created_at=1,
                 name="orion",
-                bundle_location=location,
+                bundle_location=f"{agent_id}/e70dc208",
                 version=1,
                 description="coordinator",
                 session_id="e9f8f58523cec9a57d3bdf93be543e8c",
@@ -2485,7 +2483,6 @@ async def test_fork_of_copy_needing_agent_with_pruned_bundle_is_not_internal_err
             ),
         }
     )
-    # Agent row still bound to the session, but its bundle blob is absent.
     artifacts = _ArtifactStore(blobs={})
     client = TestClient(
         _build_app(
@@ -2501,24 +2498,6 @@ async def test_fork_of_copy_needing_agent_with_pruned_bundle_is_not_internal_err
         "/v1/sessions/e9f8f58523cec9a57d3bdf93be543e8c/fork",
         json={},
         headers={"X-Forwarded-Email": caller},
-    )
-
-    assert resp.status_code != 500, resp.text
-    assert resp.json().get("error", {}).get("code") != "internal_error", resp.text
-
-
-@pytest.mark.asyncio
-async def test_fork_needing_a_copy_of_a_missing_bundle_is_refused_cleanly() -> None:
-    """When the copy's source blob is gone, the fork is refused as
-    ``session_agent_missing`` before anything is created, so the dialog can
-    offer another agent instead of an internal error."""
-    artifacts = _ArtifactStore(blobs={})
-    client, conv_store = _cross_user_fork(artifact_store=artifacts)
-
-    resp = client.post(
-        "/v1/sessions/e9f8f58523cec9a57d3bdf93be543e8c/fork",
-        json={},
-        headers={"X-Forwarded-Email": "forker@example.com"},
     )
 
     assert resp.status_code == 410, resp.text
