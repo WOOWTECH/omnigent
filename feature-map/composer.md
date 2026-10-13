@@ -27,6 +27,8 @@ and steers messages while the agent is busy.
 - `permission-mode`: the harness's native approval modes; the current mode is
   marked and the choice persists.
 - `slash-menu`: typing `/` opens commands and skills with keyboard navigation.
+- `new-command`: `/new` opens a blank new-session composer in the same project;
+  working-directory selection follows the project's defaults, not the old session.
 - `attachments`: attach button, paste, and drop onto the transcript; chips can
   be removed. State: unsupported file type rejected without losing the message.
 - `send-shortcut`: Enter or Mod+Enter, chosen in settings; only one gesture sends.
@@ -61,6 +63,8 @@ and steers messages while the agent is busy.
 - Type `/` in the message box; attach files with the button, by paste, or by
   dropping them on the transcript.
 - Send while the agent is working to queue a message, then steer it.
+- Type `/n`, press Tab to complete `/new`, then Enter to open the new-session
+  page in the same project. Selecting **New session** in Commands also opens it.
 
 **Desktop browser pointer** (open a session in the desktop app):
 
@@ -143,6 +147,15 @@ Tests under `tests/browser_ui/` stub every backend call and need no instance:
   `tests/e2e_ui/chat/test_codex_effort_terminal_composer_mirror.py::test_composer_effort_pick_survives_terminal_turns`
 - **`permission-mode`:**
   `tests/e2e_ui/chat/test_claude_model_picker.py::test_claude_native_permission_mode_switch_persists`
+- **`new-command`:**
+  `tests/browser_ui/chat/test_slash_menu.py::test_new_command_opens_landing_in_current_project`
+  covers Enter, Tab then Enter, and clicking the command, with first-class,
+  legacy-label, off-sidebar, partial-sidebar, and no-project sessions.
+  `tests/browser_ui/chat/test_slash_menu.py::test_new_command_respects_unfiled_sidebar_row`
+  covers explicit removal from a project;
+  `tests/browser_ui/chat/test_slash_menu.py::test_new_command_project_lookup_error_is_visible_and_retryable`
+  covers failed lookup and retry without using a stale project name.
+  No running agent is needed.
 - **`slash-menu`:**
   `tests/browser_ui/chat/test_slash_menu.py::test_slash_menu_tracks_real_focus_and_wrapping_keyboard_navigation`
 - **`attachments`:**
@@ -187,6 +200,9 @@ Tests under `tests/browser_ui/` stub every backend call and need no instance:
   `tests/e2e_ui/mobile/test_composer_model_label_stop_overlap.py::test_new_session_composer_collapses_labels_to_icons_on_mobile`
 
 ## Gotchas
+
+- Chat `/new` is local navigation, not a message to the agent. Native TUI
+  `/new` is unchanged.
 
 - The in-session and new-session composers are different surfaces. A change to
   the pill, tooltip, configuration menu, or effort picker in one does not reach
