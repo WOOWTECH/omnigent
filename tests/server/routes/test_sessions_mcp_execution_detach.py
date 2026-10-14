@@ -16,7 +16,7 @@ from omnigent.runner.mcp_execution_registry import (
 )
 from omnigent.server.routes import sessions as sessions_mod
 from omnigent.server.routes.sessions import _handle_mcp_tools_call
-from omnigent.spec.types import PolicyAction
+from omnigent.spec.types import Phase, PolicyAction
 
 _SESSION_ID = "conv_mcp_detach"
 
@@ -58,6 +58,91 @@ class _UnknownToolRunnerClient:
                 return {"error": {"code": -32602, "message": "Unknown tool: qa_missing_tool"}}
 
         return _Response()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("output", "runner_flag", "result_policy", "expected_error"),
+    [
+        ('{"error": "Not a directory"}', None, "allow", True),
+        ('{"blocked": true, "reason": "denied"}', None, "allow", True),
+        ('{"content": "繁體中文 canary"}', None, "allow", False),
+        ('{"error": null, "blocked": false}', None, "allow", False),
+        ('["error", "normal data"]', None, "allow", False),
+        ("Error: literal successful text", None, "allow", False),
+        ("upstream failed", True, "allow", True),
+        ("normal", "true", "allow", False),
+        ('{"error": "private failure"}', None, "redact", True),
+        ("normal", None, "redact", False),
+        ("normal", None, "deny", True),
+    ],
+)
+async def test_execution_error_flag_survives_proxy_and_result_policy(
+    monkeypatch: pytest.MonkeyPatch,
+    output: str,
+    runner_flag: object,
+    result_policy: str,
+    expected_error: bool,
+) -> None:
+    """Execution failures stay tool errors, including after output redaction."""
+
+    class PolicyEngine(_AllowPolicyEngine):
+        async def evaluate(self, ctx: EvaluationContext) -> PolicyResult:
+            if ctx.phase == Phase.TOOL_RESULT:
+                if result_policy == "redact":
+                    return PolicyResult(action=PolicyAction.ALLOW, data="redacted")
+                if result_policy == "deny":
+                    return PolicyResult(action=PolicyAction.DENY, reason="test policy")
+            return PolicyResult(action=PolicyAction.ALLOW)
+
+    class RunnerResponse:
+        def raise_for_status(self) -> None:
+            pass
+
+        def json(self) -> dict[str, Any]:
+            result: dict[str, Any] = {"output": output}
+            if runner_flag is not None:
+                result["isError"] = runner_flag
+            return {"result": result}
+
+    class RunnerClient:
+        async def post(self, *_args: object, **_kwargs: object) -> RunnerResponse:
+            return RunnerResponse()
+
+    engine = PolicyEngine()
+    monkeypatch.setattr(
+        sessions_mod, "_load_agent_spec_for_session", lambda conv, agent_store: object()
+    )
+    monkeypatch.setattr(
+        sessions_mod,
+        "_build_policy_engine_from_spec",
+        lambda spec, session_id, conversation_store, conversation=None: engine,
+    )
+
+    async def runner_client(session_id: str, runner_router: Any) -> RunnerClient:
+        del session_id, runner_router
+        return RunnerClient()
+
+    monkeypatch.setattr(sessions_mod, "_get_runner_client", runner_client)
+    response = await _handle_mcp_tools_call(
+        rpc_id=9,
+        session_id=_SESSION_ID,
+        params={"name": "sys_os_read", "arguments": {"path": "canary.py/child"}},
+        conversation_store=_ConversationStore(),  # type: ignore[arg-type]
+        agent_store=object(),  # type: ignore[arg-type]
+        runner_router=object(),  # type: ignore[arg-type]
+    )
+    payload = json.loads(bytes(response.body))
+    assert payload["id"] == 9
+    assert "error" not in payload
+    result = payload["result"]
+    assert result.get("isError", False) is expected_error
+    expected_text = {
+        "allow": output,
+        "redact": "redacted",
+        "deny": "[Result suppressed by policy: test policy]",
+    }[result_policy]
+    assert result["content"] == [{"type": "text", "text": expected_text}]
 
 
 @pytest.mark.asyncio

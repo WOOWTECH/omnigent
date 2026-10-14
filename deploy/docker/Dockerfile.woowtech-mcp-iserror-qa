@@ -1,0 +1,16 @@
+# Preserve the deployed server and replace only the MCP response module.
+FROM ghcr.io/omnigent-ai/omnigent-server-kubernetes:v0.17.0@sha256:31c83f122e2a2c0854997235ea5163596598933bc4faa4c12f619b3d9407cd4b
+
+COPY omnigent/server/routes/_sessions/orchestration.py /build/omnigent/server/routes/_sessions/orchestration.py
+
+RUN /opt/venv/bin/python - <<'PY'
+from pathlib import Path
+import inspect
+import omnigent.server.routes._sessions.orchestration as module
+
+assert Path(module.__file__).resolve() == Path('/build/omnigent/server/routes/_sessions/orchestration.py')
+source = inspect.getsource(module._handle_mcp_tools_call)
+assert 'result["isError"] = True' in source
+assert 'mcp_response_from_tool_result(parsed_output)' in source
+print('MCP API server error flag overlay imported: PASS')
+PY
