@@ -240,6 +240,38 @@ async def test_schemas_for_ignores_local_tools_in_mixed_proxy_catalog() -> None:
 
 
 @pytest.mark.asyncio
+async def test_schemas_for_keeps_registry_tools_named_like_local_tools() -> None:
+    """Registry services are external: a local-looking name there is not a duplicate."""
+    rpc_resp = _json_resp(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": {
+                "tools": [
+                    {
+                        "name": "sys_os_read",
+                        "description": "Tracker read",
+                        "inputSchema": {"type": "object", "properties": {}},
+                    },
+                ]
+            },
+        }
+    )
+    transport = _StubTransport([rpc_resp])
+    manager = _make_manager(transport)
+    spec = AgentSpec(
+        spec_version=1,
+        name="test-agent",
+        mcp_servers=[MCPServerConfig(name="tracker", transport="registry")],
+    )
+
+    result = await manager.schemas_for(spec)
+
+    assert result.tool_names == {"tracker__sys_os_read"}
+    assert [call.url for call in transport.calls] == ["http://ap-server/v1/mcp/tracker"]
+
+
+@pytest.mark.asyncio
 async def test_schemas_for_normalizes_null_input_schema() -> None:
     """A tool with ``inputSchema: null`` must normalize to ``{type: object, properties: {}}``.
 
