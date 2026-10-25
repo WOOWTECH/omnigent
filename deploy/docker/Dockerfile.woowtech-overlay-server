@@ -1,0 +1,22 @@
+# WOOWTECH fork 專用：以上游 v0.19.1 server image 為底，只換掉 MCP 回應的那一個檔案
+# （保留 tool 失敗的 isError 標記）。其餘 bytes 與上游 digest 相同。
+FROM ghcr.io/omnigent-ai/omnigent-server-kubernetes:v0.19.1@sha256:5746692f3c3a95502f76f83260c3e5ff36348ad8c3cdce1fab85784065e44dad
+
+# 換檔前先確認 image 內的原檔就是 git tag v0.19.1 的版本，overlay 才只帶這次的 diff。
+RUN echo '87d26269ba6f9f1984f24bcb6f50106a2c042d8c40d2cb021ae7ccf6d29b626d  /build/omnigent/server/routes/_sessions/orchestration.py' | sha256sum -c -
+
+COPY omnigent/server/routes/_sessions/orchestration.py /build/omnigent/server/routes/_sessions/orchestration.py
+
+RUN /opt/venv/bin/python - <<'PY'
+from pathlib import Path
+import inspect
+import importlib.metadata
+import omnigent.server.routes._sessions.orchestration as module
+
+assert importlib.metadata.version('omnigent') == '0.19.1', importlib.metadata.version('omnigent')
+assert Path(module.__file__).resolve() == Path('/build/omnigent/server/routes/_sessions/orchestration.py')
+source = inspect.getsource(module._handle_mcp_tools_call)
+assert 'result["isError"] = True' in source
+assert 'mcp_response_from_tool_result(parsed_output)' in source
+print('WOOWTECH v0.19.1 server overlay imported: PASS')
+PY

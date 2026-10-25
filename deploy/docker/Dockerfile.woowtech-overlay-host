@@ -1,0 +1,28 @@
+# WOOWTECH fork 專用：以上游 v0.19.1 host image 為底，只換掉 runner MCP 的三個檔案
+# （tool 清單與本機 dispatch 的授權一致、未知 tool 回 protocol error）。其餘 bytes 與上游 digest 相同。
+FROM ghcr.io/omnigent-ai/omnigent-host:v0.19.1@sha256:46ddb52b8013e69bcd2068842d9746bc896d50f5884a2469d51a27a6211c5814
+
+# 換檔前先確認 image 內的原檔就是 git tag v0.19.1 的版本，overlay 才只帶這次的 diff。
+RUN cd /opt/venv/lib/python3.12/site-packages/omnigent/runner && printf '%s\n' \
+      '181e9eabfd6be7506165eea212f6ac98da1d5f0f46b1edbc14297196f45bf96f  mcp_routes.py' \
+      '2f8df6e58c0a89d8ffe9d59be355696b5e2e9687b0ca5a1196f01e5f5f0e493b  proxy_mcp_manager.py' \
+      '5cf833a32f65eae3c92c43cdbd2efb9cd2883193de1c460431ffbb5892adc040  tool_dispatch.py' \
+    | sha256sum -c -
+
+COPY omnigent/runner/mcp_routes.py omnigent/runner/proxy_mcp_manager.py omnigent/runner/tool_dispatch.py /opt/venv/lib/python3.12/site-packages/omnigent/runner/
+COPY omnigent/runner/mcp_routes.py omnigent/runner/proxy_mcp_manager.py omnigent/runner/tool_dispatch.py /build/omnigent/runner/
+
+RUN /opt/venv/bin/python - <<'PY'
+import importlib
+from pathlib import Path
+import importlib.metadata
+
+assert importlib.metadata.version('omnigent') == '0.19.1', importlib.metadata.version('omnigent')
+for name in ('mcp_routes', 'proxy_mcp_manager', 'tool_dispatch'):
+    module = importlib.import_module(f'omnigent.runner.{name}')
+    installed = Path(module.__file__).resolve()
+    assert installed == Path(f'/opt/venv/lib/python3.12/site-packages/omnigent/runner/{name}.py')
+    assert installed.read_bytes() == Path(f'/build/omnigent/runner/{name}.py').read_bytes()
+from omnigent.runner.tool_dispatch import build_mcp_local_tool_schemas, is_known_mcp_local_tool  # noqa: F401
+print('WOOWTECH v0.19.1 host overlay imports from installed package: PASS')
+PY

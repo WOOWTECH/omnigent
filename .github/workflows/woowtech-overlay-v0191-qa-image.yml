@@ -1,0 +1,44 @@
+name: WOOWTECH v0.19.1 overlay QA images
+
+# WOOWTECH fork 專用：push 到這條分支時，build 並推送 server／host 兩個 overlay QA image。
+on:
+  push:
+    branches:
+      - fix/omnigent-v0191-overlay-20261025
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build:
+    if: github.repository == 'WOOWTECH/omnigent'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - component: server
+            image: ghcr.io/woowtech/omnigent-server-kubernetes:0.19.1-overlay-qa-20261025
+          - component: host
+            image: ghcr.io/woowtech/omnigent-host:0.19.1-overlay-qa-20261025
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+      - uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5
+      - uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf
+        with:
+          context: .
+          file: deploy/docker/Dockerfile.woowtech-overlay-${{ matrix.component }}
+          platforms: linux/amd64
+          push: true
+          provenance: false
+          tags: ${{ matrix.image }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/WOOWTECH/omnigent
+            org.opencontainers.image.revision=${{ github.sha }}
