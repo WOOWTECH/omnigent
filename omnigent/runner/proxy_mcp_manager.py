@@ -197,7 +197,7 @@ class ProxyMcpManager:
         if any(c.transport != "registry" for c in spec.mcp_servers):
             routes.insert(0, None)
         for service in routes:
-            result = await self._schemas_at(service)
+            result = await self._schemas_at(service, spec)
             for schema in result.schemas:
                 name = schema.get("name")
                 if not isinstance(name, str):
@@ -209,7 +209,7 @@ class ProxyMcpManager:
             failures.update(result.failures)
         return McpSchemasResult(schemas=schemas, tool_names=names, failures=failures)
 
-    async def _schemas_at(self, service: str | None) -> McpSchemasResult:
+    async def _schemas_at(self, service: str | None, spec: AgentSpec) -> McpSchemasResult:
         """Discover one service, adding its namespace for the harness.
 
         ``None`` selects the existing session proxy for runner-local tools.
@@ -278,9 +278,14 @@ class ProxyMcpManager:
 
         for tool in tools_list:
             name = tool.get("name")
-            # The public proxy also lists runner-local tools. The runner already
-            # registers those directly; injecting them again would duplicate tools.
-            if not isinstance(name, str) or not name or is_known_mcp_local_tool(name, spec):
+            # The public session proxy also lists runner-local tools. The runner
+            # already registers those directly; injecting them again would
+            # duplicate tools. Registry services are external, so keep their tools.
+            if (
+                not isinstance(name, str)
+                or not name
+                or (service is None and is_known_mcp_local_tool(name, spec))
+            ):
                 continue
             if service:
                 name = f"{service}__{name}"
