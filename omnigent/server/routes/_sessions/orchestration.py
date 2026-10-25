@@ -112,6 +112,7 @@ from omnigent.runtime import (
     pending_inputs,
 )
 from omnigent.runtime.agent_cache import AgentCache
+from omnigent.runtime.mcp_tool_result import mcp_response_from_tool_result
 from omnigent.runtime.policies.approval import (
     build_elicitation_request_event,
     resolve_ask_timeout,
@@ -12502,7 +12503,17 @@ async def _handle_mcp_tools_call(
                 "MCP server requires additional elicitation rounds (not yet supported)",
             )
 
-    output: str = exec_data.get("result", {}).get("output", "")
+    runner_result = exec_data.get("result", {})
+    output: str = runner_result.get("output", "")
+    try:
+        parsed_output = json.loads(output)
+    except ValueError:
+        parsed_output = None
+    # Keep failure status even when result policy redacts its explanation.
+    is_error = (
+        runner_result.get("isError") is True
+        or mcp_response_from_tool_result(parsed_output).get("isError") is True
+    )
     _logger.debug(
         "MCP tools/call execute: session=%r tool=%r output_len=%d",
         session_id,
@@ -12541,6 +12552,7 @@ async def _handle_mcp_tools_call(
         output = "[Result withheld: MCP gateway result-review approval is not supported]"
     elif result_policy.action == PolicyAction.DENY:
         output = f"[Result suppressed by policy: {result_policy.reason or 'no reason given'}]"
+        is_error = True
     elif result_policy.data is not None:
         # Policy returned transformed output (e.g. PII-redacted content).
         # The TOOL_RESULT phase contract requires data to be a str; coerce
@@ -12558,6 +12570,8 @@ async def _handle_mcp_tools_call(
     result: dict[str, Any] = {"content": [{"type": "text", "text": output}]}
     if "isError" in exec_data:
         result["isError"] = exec_data["isError"]
+    if is_error:
+        result["isError"] = True
     return _mcp_ok_response(rpc_id, result)
 
 
