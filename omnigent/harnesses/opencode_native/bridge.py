@@ -460,6 +460,16 @@ def user_opencode_auth_path() -> Path:
     return base / "opencode" / "auth.json"
 
 
+def user_opencode_config_paths() -> tuple[Path, ...]:
+    """Return existing user OpenCode configs in their load order."""
+    xdg = os.environ.get("XDG_CONFIG_HOME", "").strip()
+    base = Path(xdg) if xdg else Path.home() / ".config"
+    cfg_dir = base / "opencode"
+    return tuple(
+        path for name in ("opencode.json", "opencode.jsonc") if (path := cfg_dir / name).is_file()
+    )
+
+
 def user_opencode_config_path() -> Path | None:
     """
     Return the user's real OpenCode config path (not the per-session one).
@@ -469,16 +479,11 @@ def user_opencode_config_path() -> Path | None:
     defaulting to ``~/.config/opencode/opencode.jsonc``.
 
     OpenCode accepts both ``.jsonc`` (with comments) and ``.json`` extensions;
-    the ``.jsonc`` variant is checked first.
+    the ``.jsonc`` variant has priority when both exist. Use
+    :func:`user_opencode_config_paths` when both files must be read.
     """
-    xdg = os.environ.get("XDG_CONFIG_HOME", "").strip()
-    base = Path(xdg) if xdg else Path.home() / ".config"
-    cfg_dir = base / "opencode"
-    for name in ("opencode.jsonc", "opencode.json"):
-        path = cfg_dir / name
-        if path.is_file():
-            return path
-    return None
+    paths = user_opencode_config_paths()
+    return paths[-1] if paths else None
 
 
 def seed_opencode_auth(bridge_dir: Path) -> Path | None:

@@ -575,34 +575,38 @@ def maybe_merge_user_provider_config(config: dict[str, object]) -> dict[str, obj
     :returns: *config* with user's ``provider`` entries (and, if unset, the
         user's default ``model``) merged in.
     """
-    from omnigent.harnesses.opencode_native.bridge import user_opencode_config_path
+    from omnigent.harnesses.opencode_native.bridge import user_opencode_config_paths
 
-    user_path = user_opencode_config_path()
-    if user_path is None:
+    user_paths = user_opencode_config_paths()
+    if not user_paths:
         return config
 
-    try:
-        raw = user_path.read_text(encoding="utf-8")
-        # Try plain JSON first (handles .json files without comments).
-        # If that fails, strip JSONC comments and trailing commas, then
-        # retry (handles .jsonc).
+    def _merge_dicts(base: dict[str, object], override: dict[str, object]) -> dict[str, object]:
+        merged = dict(base)
+        for key, value in override.items():
+            old = merged.get(key)
+            if isinstance(old, dict) and isinstance(value, dict):
+                merged[key] = _merge_dicts(old, value)
+            else:
+                merged[key] = value
+        return merged
+
+    user_config: dict[str, object] = {}
+    for user_path in user_paths:
         try:
-            user_config = json.loads(raw)
+            raw = user_path.read_text(encoding="utf-8")
+            try:
+                parsed = json.loads(raw)
+            except json.JSONDecodeError:
+                cleaned = _strip_trailing_commas(_strip_jsonc_comments(raw))
+                parsed = json.loads(cleaned)
+        except (OSError, UnicodeDecodeError):
+            continue
         except json.JSONDecodeError:
-            cleaned = _strip_jsonc_comments(raw)
-            cleaned = _strip_trailing_commas(cleaned)
-            user_config = json.loads(cleaned)
-    except (OSError, UnicodeDecodeError):
-        return config
-    except json.JSONDecodeError:
-        _logger.warning(
-            "Failed to parse user OpenCode config at %s — ignoring user providers",
-            user_path,
-        )
-        return config
-
-    if not isinstance(user_config, dict):
-        return config
+            _logger.warning("Failed to parse user OpenCode config at %s", user_path)
+            continue
+        if isinstance(parsed, dict):
+            user_config = _merge_dicts(user_config, parsed)
 
     # Adopt the user's default ``model`` when the synthesized config pins none.
     # ``setdefault`` keeps the synthesized value authoritative (gateway /

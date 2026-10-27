@@ -414,6 +414,68 @@ def test_merge_user_provider_config_adds_user_providers(
     assert "$schema" in result
 
 
+def test_merge_user_provider_config_reads_json_when_jsonc_only_has_schema(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A JSONC placeholder must not hide a provider defined in JSON."""
+    cfg_dir = tmp_path / "cfg" / "opencode"
+    cfg_dir.mkdir(parents=True)
+    (cfg_dir / "opencode.json").write_text(
+        json.dumps({"provider": {"litellm": {"models": {"model": {"name": "Test"}}}}}),
+        encoding="utf-8",
+    )
+    (cfg_dir / "opencode.jsonc").write_text(
+        '{"$schema": "https://opencode.ai/config.json"}', encoding="utf-8"
+    )
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "cfg"))
+
+    result = maybe_merge_user_provider_config({})
+
+    providers = result["provider"]
+    assert isinstance(providers, dict)
+    assert providers["litellm"]["models"]["model"]["name"] == "Test"
+
+
+def test_merge_user_provider_config_merges_both_files_with_jsonc_priority(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """OpenCode merges nested providers, but JSONC overrides conflicting values."""
+    cfg_dir = tmp_path / "cfg" / "opencode"
+    cfg_dir.mkdir(parents=True)
+    (cfg_dir / "opencode.json").write_text(
+        json.dumps(
+            {
+                "model": "shared/old",
+                "plugin": ["json-plugin"],
+                "provider": {
+                    "shared": {
+                        "npm": "@ai-sdk/openai-compatible",
+                        "options": {"baseURL": "https://example.invalid/v1"},
+                        "models": {"old": {"name": "Old"}},
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    (cfg_dir / "opencode.jsonc").write_text(
+        '{"model": "shared/new", "plugin": ["jsonc-plugin"], '
+        '"provider": {"shared": {"models": {"new": {"name": "New"}}}}}',
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "cfg"))
+
+    result = maybe_merge_user_provider_config({})
+
+    assert result["model"] == "shared/new"
+    assert result["plugin"] == ["jsonc-plugin"]
+    providers = result["provider"]
+    assert isinstance(providers, dict)
+    assert providers["shared"]["npm"] == "@ai-sdk/openai-compatible"
+    assert providers["shared"]["options"]["baseURL"] == "https://example.invalid/v1"
+    assert set(providers["shared"]["models"]) == {"old", "new"}
+
+
 def test_merge_user_provider_config_does_not_clobber_synthesized_providers(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
