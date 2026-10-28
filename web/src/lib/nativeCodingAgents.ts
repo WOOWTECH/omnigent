@@ -142,7 +142,9 @@ export const NATIVE_CODING_AGENTS = [
     displayName: "OpenCode",
     iconKind: "opencode",
     sortRank: 25,
-    // No capabilities → no permission picker. OpenCode's native modes are the
+    // modelPicker：新對話先從 host 的 `opencode models` 選模型，建立時帶 model_override。
+    capabilities: ["modelPicker"],
+    // No permission picker. OpenCode's native modes are the
     // `build` and `plan` primary agents, switched via Tab inside the TUI, and
     // `opencode --server <url>` (how the runner launches it) has no `--agent`
     // flag. The runner's config always asks on every tool (`permissions` rule
