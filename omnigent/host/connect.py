@@ -3594,6 +3594,37 @@ class HostProcess:
                 models=with_source(devin_models),
             )
 
+        if harness == "opencode-native":
+            # 用 host 上 opencode CLI 的 `opencode models` 預覽模型清單；不加
+            # --refresh，避免 picker 每 15 秒輪詢都打外部網路。
+            from omnigent.harnesses.opencode_native.app_server import (
+                OpenCodeCliNotFoundError,
+                list_opencode_cli_model_options,
+            )
+
+            try:
+                opencode_models = await asyncio.to_thread(
+                    list_opencode_cli_model_options, refresh=False
+                )
+            except OpenCodeCliNotFoundError as exc:
+                return HostModelOptionsResultFrame(
+                    request_id=frame.request_id,
+                    status="failed",
+                    error=str(exc),
+                )
+            except Exception:  # noqa: BLE001 — no catalog, never a crash
+                _logger.warning("OpenCode model catalog unavailable", exc_info=True)
+                return HostModelOptionsResultFrame(
+                    request_id=frame.request_id,
+                    status="failed",
+                    error="failed to resolve OpenCode model options",
+                )
+            return HostModelOptionsResultFrame(
+                request_id=frame.request_id,
+                status="ok",
+                models=with_source(opencode_models),
+            )
+
         if is_claude_sdk_harness_name(harness):
             # SDK-mode Claude is a pass-through client with no model catalog
             # of its own, so the endpoint listing IS the harness truth — the

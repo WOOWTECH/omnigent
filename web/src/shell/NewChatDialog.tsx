@@ -3134,6 +3134,13 @@ export function NewChatLandingScreen() {
     canLoadHostModels("pi-native"),
     { poll: selectedNativeHarness === "pi-native" },
   );
+  const {
+    data: hostOpencodeModelOptions,
+    isLoading: hostOpencodeModelsLoading,
+    error: hostOpencodeModelsError,
+  } = useHostModelOptions(selectedHostId, "opencode-native", canLoadHostModels("opencode-native"), {
+    poll: selectedNativeHarness === "opencode-native",
+  });
   // Keep this host's cached choices while requests wait for readiness.
   // A fetched catalog, including an empty one, takes precedence.
   const cachedHostModels =
@@ -3177,6 +3184,12 @@ export function NewChatLandingScreen() {
     hostPiModelOptions,
     hostPiModelsLoading,
     cachedHostModels?.pi,
+  );
+  const availableOpencodeModels = availableHostModels(
+    "opencode-native",
+    hostOpencodeModelOptions,
+    hostOpencodeModelsLoading,
+    cachedHostModels?.opencode,
   );
   const {
     data: hostDevinModelOptions,
@@ -3296,6 +3309,22 @@ export function NewChatLandingScreen() {
           })),
     [availablePiModels, sandboxSelected, sandboxCatalog],
   );
+  const opencodeModelOptions = useMemo(
+    () =>
+      sandboxSelected
+        ? (sandboxCatalog ?? [])
+        : (availableOpencodeModels ?? []).map((option) => ({
+            id: option.id,
+            model: option.model,
+            displayName: nativeModelLabel(option),
+            isDefault: option.isDefault,
+            source: option.source,
+          })),
+    [availableOpencodeModels, sandboxSelected, sandboxCatalog],
+  );
+  // 只有 Model 一列（沒有 permission mode）的 harness：Pi 與 OpenCode。
+  const modelOnlyPickerOptions =
+    selectedNativeHarness === "opencode-native" ? opencodeModelOptions : piModelOptions;
   const supportsPermissionMode = nativeAgentHasCapability(selectedAgent, "permissionMode");
   const supportsDevinMode = nativeAgentHasCapability(selectedAgent, "devinMode");
   const supportsApprovalMode = nativeAgentHasCapability(selectedAgent, "approvalMode");
@@ -3387,15 +3416,15 @@ export function NewChatLandingScreen() {
     }
     if (supportsModelPicker && !supportsPermissionMode) {
       const modelValue =
-        piModelOptions.find((model) => model.id === pickedModel)?.displayName ??
-        defaultModelLabel(piModelOptions);
+        modelOnlyPickerOptions.find((model) => model.id === pickedModel)?.displayName ??
+        defaultModelLabel(modelOnlyPickerOptions);
       const thinkingLevelValue = normalizeEffortLabel(pickedEffort);
       return [
         { label: "Model", value: modelValue },
         ...(selectedNativeHarness === "pi-native" && thinkingLevelValue
           ? [{ label: "Thinking level", value: thinkingLevelValue }]
           : []),
-        ...sourceRows(piModelOptions),
+        ...sourceRows(modelOnlyPickerOptions),
       ];
     }
     if (supportsPermissionMode) {
@@ -3503,7 +3532,7 @@ export function NewChatLandingScreen() {
     pickedModel,
     claudeModelOptions,
     codexModelOptions,
-    piModelOptions,
+    modelOnlyPickerOptions,
     pickedEffort,
     permissionMode,
     approvalMode,
@@ -3531,9 +3560,11 @@ export function NewChatLandingScreen() {
         ? devinModelOptions
         : selectedNativeHarness === "pi-native"
           ? piModelOptions
-          : selectedNativeHarness === "codex-native"
-            ? codexModelOptions
-            : [];
+          : selectedNativeHarness === "opencode-native"
+            ? opencodeModelOptions
+            : selectedNativeHarness === "codex-native"
+              ? codexModelOptions
+              : [];
   const [pickerModelSearch, setPickerModelSearch] = useState("");
   const pickerModelsLoading =
     sandboxCatalogPending ||
@@ -3545,9 +3576,11 @@ export function NewChatLandingScreen() {
           ? hostCodexModelsLoading
           : selectedNativeHarness === "pi-native"
             ? hostPiModelsLoading
-            : selectedNativeHarness === "devin-native"
-              ? hostDevinModelsLoading
-              : false));
+            : selectedNativeHarness === "opencode-native"
+              ? hostOpencodeModelsLoading
+              : selectedNativeHarness === "devin-native"
+                ? hostDevinModelsLoading
+                : false));
   const pickerModelsError = sandboxSelected
     ? sandboxCatalogError || sandboxDefaultCatalogError
       ? new Error((sandboxCatalogError ?? sandboxDefaultCatalogError)!)
@@ -3558,7 +3591,9 @@ export function NewChatLandingScreen() {
         ? hostCodexModelsError
         : selectedNativeHarness === "devin-native"
           ? hostDevinModelsError
-          : null;
+          : selectedNativeHarness === "opencode-native"
+            ? hostOpencodeModelsError
+            : null;
   const modelCatalogLookupEnabled = sandboxSelected
     ? sandboxPreviewEnabled && sandboxInferenceConfigured
     : selectedNativeHarness !== null && canLoadHostModels(selectedNativeHarness);
@@ -3623,6 +3658,7 @@ export function NewChatLandingScreen() {
               claude: availableClaudeModels,
               codex: availableCodexModels,
               pi: availablePiModels,
+              opencode: availableOpencodeModels,
             },
           }
         : null,
@@ -3635,6 +3671,7 @@ export function NewChatLandingScreen() {
       availableClaudeModels,
       availableCodexModels,
       availablePiModels,
+      availableOpencodeModels,
     ],
   );
   useEffect(() => {
@@ -3878,7 +3915,8 @@ export function NewChatLandingScreen() {
                           {sandboxModels.data.provider_label}
                         </div>
                       )}
-                      {selectedNativeHarness === "pi-native" && (
+                      {(selectedNativeHarness === "pi-native" ||
+                        selectedNativeHarness === "opencode-native") && (
                         <Input
                           aria-label="Search models"
                           placeholder="Search models…"
@@ -3995,6 +4033,7 @@ export function NewChatLandingScreen() {
     "claude-native": availableClaudeModels,
     "codex-native": availableCodexModels,
     "pi-native": availablePiModels,
+    "opencode-native": availableOpencodeModels,
     "devin-native": hostDevinModelOptions,
   };
   const pickerEntrySummaries = Object.fromEntries(
@@ -4015,9 +4054,11 @@ export function NewChatLandingScreen() {
             ? codexModelOptions
             : native.iconKind === "pi"
               ? piModelOptions
-              : native.iconKind === "devin"
-                ? devinModelOptions
-                : [];
+              : native.iconKind === "opencode"
+                ? opencodeModelOptions
+                : native.iconKind === "devin"
+                  ? devinModelOptions
+                  : [];
       const savedFusion = fusionOption(catalog)?.fusion;
       // Preserve saved IDs while host data is absent; an empty result is authoritative.
       const hostCatalogUnavailable =
@@ -4112,8 +4153,8 @@ export function NewChatLandingScreen() {
   // model seed falls back to the remembered pick, and the remembered-routing
   // seed below stays live (an invalid pin must not suppress it).
   const projectModelVocab =
-    selectedNativeHarness === "pi-native"
-      ? piModelOptions
+    selectedNativeHarness === "pi-native" || selectedNativeHarness === "opencode-native"
+      ? modelOnlyPickerOptions
       : selectedNativeHarness === "claude-native"
         ? claudeModelOptions
         : selectedNativeHarness === "devin-native"
@@ -4178,6 +4219,16 @@ export function NewChatLandingScreen() {
           ? stored.effort
           : "",
       );
+    }
+    if (selectedNativeHarness === "opencode-native") {
+      // OpenCode 只有 Model 一軸；清掉其他 harness 留下的 effort。
+      setPickedModel(
+        projectSeed(opencodeModelOptions) ??
+          (stored.model != null && opencodeModelOptions.some((model) => model.id === stored.model)
+            ? stored.model
+            : ""),
+      );
+      setPickedEffort("");
     }
     if (supportsPermissionMode) {
       setPermissionMode(
@@ -4255,6 +4306,7 @@ export function NewChatLandingScreen() {
     claudeModelOptions,
     codexModelOptions,
     piModelOptions,
+    opencodeModelOptions,
     projectDefaultModel,
   ]);
   useEffect(() => {

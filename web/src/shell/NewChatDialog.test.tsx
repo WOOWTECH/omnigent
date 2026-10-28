@@ -1818,24 +1818,54 @@ describe("NewChatLandingScreen initial picker loading", () => {
     );
   });
 
-  it.each([
-    { harness: "cursor-native", label: "Cursor" },
-    { harness: "opencode-native", label: "OpenCode" },
-  ])("does not request unrelated model catalogs for $label", ({ harness, label }) => {
+  it.each([{ harness: "cursor-native", label: "Cursor" }])(
+    "does not request unrelated model catalogs for $label",
+    ({ harness, label }) => {
+      mockAgents([
+        {
+          id: "a_no_models",
+          name: `${harness}-ui`,
+          display_name: label,
+          description: null,
+          harness,
+          skills: [],
+        },
+      ]);
+      mockModelQueries(() => pendingModels);
+      renderLanding();
+
+      expect(expectReadyPicker()).toHaveAccessibleName(new RegExp(label));
+      expect(useHostModelOptionsMock).toHaveBeenCalledWith(
+        "host_1",
+        "claude-native",
+        false,
+        expect.any(Object),
+      );
+    },
+  );
+
+  it("requests only the OpenCode catalog when OpenCode is selected", () => {
     mockAgents([
       {
-        id: "a_no_models",
-        name: `${harness}-ui`,
-        display_name: label,
+        id: "a_opencode",
+        name: "opencode-native-ui",
+        display_name: "OpenCode",
         description: null,
-        harness,
+        harness: "opencode-native",
         skills: [],
       },
     ]);
     mockModelQueries(() => pendingModels);
     renderLanding();
 
-    expect(expectReadyPicker()).toHaveAccessibleName(new RegExp(label));
+    // 跟其他有模型清單的 harness 一樣，等 OpenCode 的清單回來才顯示 picker。
+    expectLoading();
+    expect(useHostModelOptionsMock).toHaveBeenCalledWith(
+      "host_1",
+      "opencode-native",
+      true,
+      expect.objectContaining({ poll: true }),
+    );
     expect(useHostModelOptionsMock).toHaveBeenCalledWith(
       "host_1",
       "claude-native",
@@ -4270,6 +4300,12 @@ describe("NewChatLandingScreen", () => {
         expect(screen.getByTestId("new-chat-landing-agent-models")).toBeVisible();
         expect(screen.getByTestId("new-chat-landing-agent-efforts")).toBeVisible();
         expect(screen.queryByText("Advanced settings")).toBeNull();
+      } else if (native.key === "opencode") {
+        // OpenCode 只有 Model 一軸：有 Edit，但沒有 effort 選單。
+        fireEvent.click(screen.getByTestId(`new-chat-landing-agent-config-${agentId}`));
+        expect(screen.getByTestId("new-chat-landing-agent-models")).toBeVisible();
+        expect(screen.queryByTestId("new-chat-landing-agent-efforts")).toBeNull();
+        expect(screen.queryByText("Advanced settings")).toBeNull();
       } else {
         expect(screen.queryByTestId(`new-chat-landing-agent-config-${agentId}`)).toBeNull();
         fireEvent.click(screen.getByTestId(`new-chat-landing-agent-${agentId}`));
@@ -5166,6 +5202,51 @@ describe("NewChatLandingScreen", () => {
       "gpt-5-5-pro",
     );
     expect(picker).not.toHaveTextContent("Models unavailable");
+  });
+
+  it("pins the picked OpenCode model from the host catalog at create", async () => {
+    mockAgents([
+      ...DEFAULT_LANDING_AGENTS,
+      testAgent("a_opencode", "opencode-native-ui", {
+        display_name: "OpenCode",
+        harness: "opencode-native",
+      }),
+    ]);
+    mockModelQueries((harness) =>
+      harness === "opencode-native"
+        ? {
+            ...SUCCESS_QUERY_STATE,
+            data: [
+              {
+                id: "anthropic/claude-sonnet-4-5",
+                model: "claude-sonnet-4-5",
+                displayName: "anthropic/claude-sonnet-4-5",
+                isDefault: false,
+              },
+              {
+                id: "openai/gpt-5",
+                model: "gpt-5",
+                displayName: "openai/gpt-5",
+                isDefault: false,
+              },
+            ],
+          }
+        : CLAUDE_MODEL_OPTIONS_RESULT,
+    );
+    authenticatedFetchMock.mockResolvedValue({
+      ok: true,
+      json: async () => ({ id: "conv_new" }),
+    } as Response);
+    renderLanding();
+    openAgentModels("a_opencode");
+    expect(screen.getByTestId("new-chat-landing-agent-model-search")).toBeVisible();
+    expect(screen.queryByTestId("new-chat-landing-agent-efforts")).toBeNull();
+    pickPrimaryOption("model", "openai/gpt-5");
+    closeMenu();
+
+    const { body } = await submitAndReadBody();
+    expect(body.model_override).toBe("openai/gpt-5");
+    expect(body.reasoning_effort).toBeUndefined();
   });
 
   it.each([false, true])(
@@ -9009,9 +9090,9 @@ describe("NewChatLandingScreen agent picker + Edit settings", () => {
 
   it("hides Edit for a harness with no configurable settings", () => {
     mockAgents([
-      testAgent("a_bare", "opencode-native-ui", {
-        display_name: "OpenCode",
-        harness: "opencode-native",
+      testAgent("a_bare", "kiro-native-ui", {
+        display_name: "Kiro",
+        harness: "kiro-native",
       }),
     ]);
     renderLanding({ smart_routing_enabled: true });
