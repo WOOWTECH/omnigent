@@ -1,11 +1,34 @@
-# WOOWTECH fork 專用：以上游 v0.19.1 server image 為底，只換掉 MCP 回應的那一個檔案
-# （保留 tool 失敗的 isError 標記）。其餘 bytes 與上游 digest 相同。
+# WOOWTECH fork 專用：以上游 v0.19.1 server image 為底，換掉：
+# 1. MCP 回應的 orchestration.py（保留 tool 失敗的 isError 標記）；
+# 2. Web UI bundle（新對話可替 OpenCode 先選模型）。
+# 其餘 bytes 與上游 digest 相同。
+
+# ── Web UI builder：與上游 deploy/docker/Dockerfile 的 web-builder stage 相同做法 ──
+FROM --platform=$BUILDPLATFORM node:22-slim AS web-builder
+WORKDIR /web
+COPY pnpm-workspace.yaml pnpm-lock.yaml ./
+COPY patches/ ./patches/
+COPY web/package.json ./web/
+COPY web/electron/package.json ./web/electron/
+RUN npm install -g pnpm@11.15.1
+RUN pnpm install --frozen-lockfile --filter web
+COPY web/ ./web/
+ARG VITE_OMNIGENT_HOST_ROUTING=false
+RUN pnpm --filter web run build
+# 確認 OpenCode 帶 modelPicker capability 的版本真的進了 bundle。
+RUN grep -lE 'displayName:.OpenCode.,iconKind:.opencode.,sortRank:25,capabilities:\[.modelPicker.\]' \
+      /web/omnigent/server/static/web-ui/assets/*.js
+
 FROM ghcr.io/omnigent-ai/omnigent-server-kubernetes:v0.19.1@sha256:5746692f3c3a95502f76f83260c3e5ff36348ad8c3cdce1fab85784065e44dad
 
 # 換檔前先確認 image 內的原檔就是 git tag v0.19.1 的版本，overlay 才只帶這次的 diff。
 RUN echo '87d26269ba6f9f1984f24bcb6f50106a2c042d8c40d2cb021ae7ccf6d29b626d  /build/omnigent/server/routes/_sessions/orchestration.py' | sha256sum -c -
+RUN test -f /build/omnigent/server/static/web-ui/index.html
 
 COPY omnigent/server/routes/_sessions/orchestration.py /build/omnigent/server/routes/_sessions/orchestration.py
+# 整份換掉，舊 bundle 的 hash 檔名不留在 image 裡。
+RUN rm -rf /build/omnigent/server/static/web-ui
+COPY --from=web-builder /web/omnigent/server/static/web-ui /build/omnigent/server/static/web-ui
 
 RUN /opt/venv/bin/python - <<'PY'
 from pathlib import Path
@@ -18,5 +41,6 @@ assert Path(module.__file__).resolve() == Path('/build/omnigent/server/routes/_s
 source = inspect.getsource(module._handle_mcp_tools_call)
 assert 'result["isError"] = True' in source
 assert 'mcp_response_from_tool_result(parsed_output)' in source
+assert Path('/build/omnigent/server/static/web-ui/index.html').is_file()
 print('WOOWTECH v0.19.1 server overlay imported: PASS')
 PY
