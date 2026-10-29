@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from io import BytesIO
@@ -200,6 +201,8 @@ class _LivenessApp:
 def _build_liveness_app(
     db_uri: str,
     tmp_path: Path,
+    *,
+    public_api_docs: bool | None = None,
 ) -> _LivenessApp:
     """
     Build a real app + conversation store wired for liveness tests.
@@ -207,6 +210,8 @@ def _build_liveness_app(
     :param db_uri: SQLite URI for the shared test db (the ``db_uri``
         fixture).
     :param tmp_path: Per-test temp dir for artifacts and cache.
+    :param public_api_docs: Forwarded to ``create_app``; ``None`` leaves the
+        choice to ``OMNIGENT_PUBLIC_API_DOCS``.
     :returns: A :class:`_LivenessApp` carrying the app to drive
         ``/health`` against and the store to seed conversations in.
     """
@@ -236,8 +241,120 @@ def _build_liveness_app(
             artifact_store=artifact_store,
             cache_dir=tmp_path / "cache",
         ),
+        public_api_docs=public_api_docs,
     )
     return _LivenessApp(app=app, conversation_store=conversation_store)
+
+
+_API_DOC_PATHS = ("/docs", "/redoc", "/openapi.json")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("env_value", "argument", "expected_status"),
+    [
+        (None, None, 404),
+        ("0", None, 404),
+        ("1", None, 200),
+        ("1", False, 404),
+        ("0", True, 200),
+    ],
+)
+async def test_public_api_docs_hidden_unless_enabled(
+    db_uri: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    env_value: str | None,
+    argument: bool | None,
+    expected_status: int,
+) -> None:
+    """Anonymous callers get no generated API docs unless the deployment opts in.
+
+    ``OMNIGENT_PUBLIC_API_DOCS=1`` (or ``public_api_docs=True``, which wins)
+    re-exposes them. ``/health`` stays public, and build and SDK tooling keep
+    reading the schema from ``app.openapi()`` either way.
+    """
+    if env_value is None:
+        monkeypatch.delenv("OMNIGENT_PUBLIC_API_DOCS", raising=False)
+    else:
+        monkeypatch.setenv("OMNIGENT_PUBLIC_API_DOCS", env_value)
+    app = _build_liveness_app(db_uri, tmp_path, public_api_docs=argument).app
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        statuses = {path: (await client.get(path)).status_code for path in _API_DOC_PATHS}
+        health = await client.get("/health")
+
+    assert statuses == dict.fromkeys(_API_DOC_PATHS, expected_status)
+    assert health.status_code == 200
+    assert "/v1/hosts/{host_id}" in app.openapi()["paths"]
+
+
+# One deep link per top-level route in web/src/App.tsx (v0.19.1).
+_SPA_DEEP_LINKS = (
+    "/",
+    "/c/conv_abc123",
+    "/canvas/c/conv_abc123",
+    "/settings/general",
+    "/settings/members",
+    "/extensions/ext_demo/reports/weekly",
+    "/approve/conv_abc123/elicit_abc123",
+    "/inbox",
+    "/tasks",
+    "/usage",
+    "/login",
+    "/register",
+    "/members",
+    "/policies",
+)
+
+
+@pytest.mark.asyncio
+async def test_spa_history_fallback_serves_ui_routes_and_rejects_probes(tmp_path: Path) -> None:
+    """Deep links into the web UI still boot the SPA; other static misses 404.
+
+    Unknown top-level paths and dot segments no longer receive the HTML shell
+    as a 200, and the hidden docs routes stay 404 rather than reaching the SPA.
+    """
+    web_ui_dist = tmp_path / "web-ui"
+    web_ui_dist.mkdir()
+    (web_ui_dist / "index.html").write_text("<!doctype html><div id='root'></div>")
+
+    app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
+    app.mount("/", server_app._SPAStaticFiles(directory=web_ui_dist, html=True))
+    probes = (
+        "/.env",
+        "/.git/config",
+        "/settings/.git/config",
+        *_API_DOC_PATHS,
+        "/wp-admin",
+        "/acceptance-probe-miss",
+    )
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        deep_links = {path: await client.get(path) for path in _SPA_DEEP_LINKS}
+        misses = {path: await client.get(path) for path in probes}
+
+    for path, response in deep_links.items():
+        assert response.status_code == 200, path
+        assert response.headers["content-type"].startswith("text/html"), path
+    for path, response in misses.items():
+        assert response.status_code == 404, path
+
+
+def test_spa_route_prefixes_match_web_app_routes() -> None:
+    """The SPA fallback allowlist names exactly the web app's top-level routes.
+
+    A route added to ``web/src/App.tsx`` but missing from
+    ``_WEB_UI_ROUTE_PREFIXES`` would 404 on refresh or when opened as a link.
+    """
+    app_tsx = Path(__file__).resolve().parents[2] / "web" / "src" / "App.tsx"
+    if not app_tsx.exists():
+        pytest.skip("web/src/App.tsx not present (server-only checkout)")
+    route_prefixes = set(
+        re.findall(r"path=\{`\$\{prefix\}/([A-Za-z0-9_-]+)", app_tsx.read_text(encoding="utf-8"))
+    )
+    assert route_prefixes, "could not parse route paths from web/src/App.tsx"
+    assert route_prefixes == server_app._WEB_UI_ROUTE_PREFIXES
 
 
 @pytest.mark.asyncio
@@ -759,9 +876,10 @@ async def test_branding_missing_at_startup_remains_missing_until_app_recreation(
 
 @pytest.mark.asyncio
 async def test_branding_openapi_declares_binary_images_and_typed_info(
-    client: httpx.AsyncClient,
+    app: FastAPI,
 ) -> None:
-    schema = (await client.get("/openapi.json")).json()
+    # The schema comes from the app: the /openapi.json route is hidden by default.
+    schema = app.openapi()
     logo_response = schema["paths"]["/v1/branding/logo/{variant}"]["get"]["responses"]["200"]
     assert set(logo_response["content"]) == {
         "image/gif",

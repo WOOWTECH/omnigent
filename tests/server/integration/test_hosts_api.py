@@ -129,6 +129,7 @@ async def _connect_host(
     name: str = "test-laptop",
     configured_harnesses: dict[str, bool | str] | None = None,
     gateway_inference: dict[str, bool] | None = None,
+    user: str | None = None,
 ) -> ApplicationCommunicator:
     """Connect a mock host via WebSocket tunnel.
 
@@ -140,10 +141,15 @@ async def _connect_host(
         e.g. ``{"codex": False}``; ``None`` mimics an older host.
     :param gateway_inference: Gateway-inference map for the hello frame,
         e.g. ``{"codex": True}``; ``None`` mimics a host that doesn't report it.
+    :param user: Identity sent as ``x-test-user`` for the multi-user fixture;
+        ``None`` sends no identity.
     :returns: Connected ASGI communicator.
     """
     path = f"/v1/hosts/{host_id}/tunnel"
-    comm = ApplicationCommunicator(app, _websocket_scope(path))
+    scope = _websocket_scope(path)
+    if user is not None:
+        scope["headers"] = [(b"x-test-user", user.encode())]
+    comm = ApplicationCommunicator(app, scope)
     await comm.send_input({"type": "websocket.connect"})
     accepted = await comm.receive_output(timeout=budget(1.0))
     assert accepted["type"] == "websocket.accept"
@@ -543,6 +549,36 @@ async def test_list_hosts_reports_offline_after_disconnect(
     assert list_resp.json()["hosts"][0]["status"] == "offline"
     assert get_resp.status_code == 200
     assert get_resp.json()["status"] == "offline"
+
+
+async def test_hosts_api_reports_created_at_and_last_seen(
+    host_api_app: tuple[FastAPI, HostRegistry, HostStore, SqlAlchemyConversationStore],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    Verify list and detail carry ``created_at`` and ``last_seen`` epoch seconds.
+
+    An offline host's ``last_seen`` is when it last connected, heart-beat or
+    disconnected, so a stale registration can be told apart from a host that
+    just went offline.
+    """
+    app, _reg, host_store, _cs = host_api_app
+    registered_at = 1_700_000_000
+    monkeypatch.setattr("omnigent.stores.host_store.now_epoch", lambda: registered_at)
+    # Auth is disabled in this fixture, so the caller is the reserved "local" owner.
+    host_store.upsert_on_connect(_HOST_ID, "test-laptop", "local")
+    monkeypatch.setattr("omnigent.stores.host_store.now_epoch", lambda: registered_at + 600)
+    host_store.set_offline(_HOST_ID)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        listed = (await client.get("/v1/hosts")).json()["hosts"]
+        detail = (await client.get(f"/v1/hosts/{_HOST_ID}")).json()
+
+    assert len(listed) == 1
+    for payload in (listed[0], detail):
+        assert payload["status"] == "offline"
+        assert payload["created_at"] == registered_at
+        assert payload["last_seen"] == registered_at + 600
 
 
 async def test_launch_runner_happy_path(
@@ -959,6 +995,85 @@ async def test_get_host_403_wrong_owner(
         f"Expected 403 for wrong owner, got {resp.status_code}. "
         "Owner check on GET /v1/hosts/{{id}} is missing."
     )
+
+
+@pytest.mark.parametrize(
+    ("caller", "expected_status"),
+    [(None, 401), ("bob@test.com", 404), ("alice@test.com", 200), ("admin@test.com", 200)],
+)
+async def test_delete_host_allows_owner_and_admin(
+    multi_user_app: tuple[FastAPI, HostRegistry, HostStore, SqlAlchemyConversationStore],
+    caller: str | None,
+    expected_status: int,
+) -> None:
+    """
+    Verify DELETE /v1/hosts/{id} removes an offline host for its owner or an admin.
+
+    Another user's host reads as absent (404) rather than forbidden, and a
+    deleted host's sessions are detached rather than deleted.
+    """
+    app, _reg, host_store, conv_store = multi_user_app
+
+    @app.exception_handler(OmnigentError)
+    async def handle_error(request: Request, exc: OmnigentError) -> JSONResponse:
+        return JSONResponse(status_code=exc.http_status, content={"detail": exc.message})
+
+    host_id = "7585d2d178c145fdaec757ed2c00db81"
+    app.state.permission_store.ensure_user("admin@test.com", is_admin=True)
+    host_store.upsert_on_connect(host_id, "alice-laptop", "alice@test.com")
+    host_store.set_offline(host_id)
+    conv = conv_store.create_conversation(agent_id=None)
+    conv_store.set_host_id(conv.id, host_id, workspace="/tmp/project")
+
+    headers = {} if caller is None else {"x-test-user": caller}
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.delete(f"/v1/hosts/{host_id}", headers=headers)
+
+    assert resp.status_code == expected_status, resp.text
+    if expected_status == 200:
+        assert resp.json() == {"host_id": host_id, "object": "host.deleted", "deleted": True}
+        assert host_store.get_host(host_id) is None
+        assert conv_store.get_conversation(conv.id).host_id is None
+    else:
+        assert host_store.get_host(host_id) is not None
+        assert conv_store.get_conversation(conv.id).host_id == host_id
+
+
+async def test_delete_host_refuses_online_managed_and_unknown_hosts(
+    multi_user_app: tuple[FastAPI, HostRegistry, HostStore, SqlAlchemyConversationStore],
+) -> None:
+    """
+    Verify DELETE /v1/hosts/{id} keeps hosts it must not remove.
+
+    An online host returns 409 so a connected machine is never orphaned, a
+    server-managed sandbox host returns 409 because the server owns its
+    lifecycle, and an unknown id returns 404.
+    """
+    app, _reg, host_store, _cs = multi_user_app
+    online_id = "ac429d7a8ab74a8e866d90b2c955f1fc"
+    managed_id = "a64b78232df640b38996146cd7d526f5"
+    host_store.upsert_on_connect(online_id, "alice-laptop", "alice@test.com")
+    host_store.register_managed_host(
+        host_id=managed_id,
+        name="sandbox-host",
+        user_id="alice@test.com",
+        token="launch-token-secret",
+        provider="modal",
+        sandbox_id="sb-12345",
+        token_expires_at=int(time.time()) + 3600,
+    )
+
+    alice = {"x-test-user": "alice@test.com"}
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        online = await client.delete(f"/v1/hosts/{online_id}", headers=alice)
+        managed = await client.delete(f"/v1/hosts/{managed_id}", headers=alice)
+        unknown = await client.delete("/v1/hosts/8276d36113a64dd4a23571272ab0dc26", headers=alice)
+
+    assert online.status_code == 409, online.text
+    assert managed.status_code == 409, managed.text
+    assert unknown.status_code == 404, unknown.text
+    assert host_store.get_host(online_id) is not None
+    assert host_store.get_host(managed_id) is not None
 
 
 @pytest.mark.parametrize("user,status", [(None, 401), ("bob@test.com", 403)])
@@ -1383,6 +1498,46 @@ async def test_failed_connect_does_not_offline_another_users_host(
         "Bob's failed connect to Alice's host_id flipped her host offline "
         "(set_offline ran on a connection that never registered) - DoS."
     )
+
+
+async def test_deleted_registration_lets_machine_reconnect_under_new_owner(
+    multi_user_app: tuple[FastAPI, HostRegistry, HostStore, SqlAlchemyConversationStore],
+) -> None:
+    """
+    After an admin deletes a stale registration, the machine keeps its host id.
+
+    A machine that signs in with another account is refused while the old
+    owner's row exists; deleting that row lets it reconnect without resetting
+    its host id.
+    """
+    app, registry, host_store, _cs = multi_user_app
+    host_id = "c0a4f5bd1ec44d6e9f38b6a2d5e1c7f9"
+    app.state.permission_store.ensure_user("admin@test.com", is_admin=True)
+    host_store.upsert_on_connect(host_id, "shared-laptop", "alice@test.com")
+    host_store.set_offline(host_id)
+
+    scope = _websocket_scope(f"/v1/hosts/{host_id}/tunnel")
+    scope["headers"] = [(b"x-test-user", b"bob@test.com")]
+    refused = ApplicationCommunicator(app, scope)
+    await refused.send_input({"type": "websocket.connect"})
+    closed = await refused.receive_output(timeout=budget(1.0))
+    assert closed["type"] == "websocket.close"
+    assert closed["code"] == 4009
+    with contextlib.suppress(Exception):
+        await refused.wait(timeout=budget(2.0))
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        deleted = await client.delete(
+            f"/v1/hosts/{host_id}", headers={"x-test-user": "admin@test.com"}
+        )
+    assert deleted.status_code == 200, deleted.text
+
+    comm = await _connect_host(app, registry, host_id, "shared-laptop", user="bob@test.com")
+    reconnected = host_store.get_host(host_id)
+    assert reconnected is not None
+    assert reconnected.user_id == "bob@test.com"
+    assert reconnected.status == "online"
+    await comm.send_input({"type": "websocket.disconnect", "code": 1000})
 
 
 async def test_runner_exited_report_surfaces_in_runner_status(

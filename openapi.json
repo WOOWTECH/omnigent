@@ -10890,7 +10890,7 @@
     },
     "/v1/hosts": {
       "get": {
-        "description": "List all hosts owned by the authenticated user.\n\nReturns both online and offline hosts, with live runner\ninformation for online hosts.\n\n**Returns:** `{\"hosts\": [...]}` with host details \u2014 `host_id`, `name`, `owner`, `status`, `sandbox_provider`, `configured_harnesses`, and `gateway_inference` (`None` when no connected host has reported it to this replica).",
+        "description": "List all hosts owned by the authenticated user.\n\nReturns both online and offline hosts, with live runner\ninformation for online hosts.\n\n**Returns:** `{\"hosts\": [...]}` with host details \u2014 `host_id`, `name`, `owner`, `status`, `created_at`, `last_seen`, `sandbox_provider`, `configured_harnesses`, and `gateway_inference` (`None` when no connected host has reported it to this replica).",
         "operationId": "list_hosts_v1_hosts_get",
         "responses": {
           "200": {
@@ -10919,6 +10919,50 @@
       }
     },
     "/v1/hosts/{host_id}": {
+      "delete": {
+        "description": "Delete an offline host registration.\n\nAllowed for the host's owner and for administrators. Sessions bound\nto the host are detached, not deleted. A machine that still holds\nvalid credentials registers again on its next connect.\n\n**Returns:** `{\"host_id\": ..., \"object\": \"host.deleted\", \"deleted\": True}`.\n\n**Raises**\n\n- `HTTPException` \u2014 401 when unauthenticated, 404 when the host does not exist or belongs to another user, 409 when the host is online or is a server-managed sandbox host.",
+        "operationId": "delete_host_v1_hosts__host_id__delete",
+        "parameters": [
+          {
+            "description": "Host identifier, e.g. `\"host_a1b2c3d4...\"`.",
+            "in": "path",
+            "name": "host_id",
+            "required": true,
+            "schema": {
+              "title": "Host Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Delete Host V1 Hosts  Host Id  Delete",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete Host",
+        "tags": [
+          "hosts"
+        ]
+      },
       "get": {
         "description": "Get details for a single host.\n\n**Returns:** Host details dict \u2014 the `list_hosts` fields (including `gateway_inference`, `None` when unreported) plus `runners`.\n\n**Raises**\n\n- `HTTPException` \u2014 404 if the host does not exist.",
         "operationId": "get_host_v1_hosts__host_id__get",
