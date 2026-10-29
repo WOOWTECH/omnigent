@@ -458,6 +458,7 @@ trusts whatever value reaches it.
 | `OMNIGENT_OIDC_*` | unset | OIDC config — required in oidc mode (issuer set, or `AUTH_PROVIDER=oidc`). See `.env.example`. |
 | `OMNIGENT_BUILTIN_AGENT_DIRS` | unset | Colon-separated paths (in-container) to extra always-available built-in agents, seeded once at startup. See [Extra built-in agents](#extra-built-in-agents). |
 | `OMNIGENT_SEEDED_AGENTS` | unset (keep all) | Comma-separated allowlist of packaged built-in agent names to keep. Empty value keeps none. Never filters `OMNIGENT_BUILTIN_AGENT_DIRS` agents. See [Trimming the packaged built-in agents](#trimming-the-packaged-built-in-agents). |
+| `OMNIGENT_PUBLIC_API_DOCS` | unset (hidden) | `1` serves `/docs`, `/redoc` and `/openapi.json` without authentication. Hidden by default so a public deployment does not publish its route map; the repo's `openapi.json` stays the reference for SDK tooling. |
 | `PYPI_INDEX_URL` | `https://pypi.org/simple` | Build-time PyPI index — override only behind a corporate proxy. |
 
 `DATABASE_URL` and `ARTIFACT_DIR` are computed by compose and
