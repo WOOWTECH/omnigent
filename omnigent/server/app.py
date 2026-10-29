@@ -344,7 +344,6 @@ _WEB_UI_ROUTE_PREFIXES = frozenset(
         "c",
         "canvas",
         "extensions",
-        "grid",
         "inbox",
         "login",
         "members",
@@ -1502,11 +1501,12 @@ def create_app(
         400 recovers only for a client that sent the slice-key header and
         retries without it, which the web client does only for requests it
         keyed itself.
-    :param public_api_docs: Whether to expose FastAPI's interactive API docs
-        and OpenAPI route. ``None`` reads ``OMNIGENT_PUBLIC_API_DOCS`` and
-        defaults to enabled for backwards compatibility. Deployments with a
-        public tenant URL can set it false while keeping the checked-in schema
-        available to their build and SDK tooling.
+    :param public_api_docs: Whether to expose FastAPI's unauthenticated
+        ``/docs``, ``/redoc`` and ``/openapi.json`` routes. ``None`` reads
+        ``OMNIGENT_PUBLIC_API_DOCS`` and defaults to hidden, so a public
+        deployment does not publish its route map. The checked-in
+        ``openapi.json`` (and ``app.openapi()``) remain available to build
+        and SDK tooling either way.
     :returns: A fully configured :class:`FastAPI` application.
     :raises ValueError: If ``permission_store`` is provided
         without an ``auth_provider``.
@@ -1525,7 +1525,7 @@ def create_app(
     resolved_public_api_docs = (
         public_api_docs
         if public_api_docs is not None
-        else env_var_is_truthy("OMNIGENT_PUBLIC_API_DOCS", default=True)
+        else env_var_is_truthy("OMNIGENT_PUBLIC_API_DOCS", default=False)
     )
 
     from omnigent.server.server_config import (
