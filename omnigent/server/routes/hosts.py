@@ -74,6 +74,7 @@ from omnigent.server.routes._workspace_validation import (
     _is_windows_absolute_path,
     restore_host_filesystem_url_path,
 )
+from omnigent.server.routes.sessions import announce_hosts_changed
 from omnigent.server.schemas import SessionGitOptions
 from omnigent.stores import AgentStore, ConversationStore
 from omnigent.stores.host_store import HostStore, host_is_live
@@ -719,9 +720,10 @@ def create_hosts_router(
 
         :param request: The incoming request (for auth).
         :returns: ``{"hosts": [...]}`` with host details — ``host_id``,
-            ``name``, ``owner``, ``status``, ``sandbox_provider``,
-            ``configured_harnesses``, and ``gateway_inference`` (``None`` when
-            no connected host has reported it to this replica).
+            ``name``, ``owner``, ``status``, ``created_at``, ``last_seen``,
+            ``sandbox_provider``, ``configured_harnesses``, and
+            ``gateway_inference`` (``None`` when no connected host has
+            reported it to this replica).
         """
         # require_user: unauthenticated callers 401. user_id is None
         # only when auth is disabled entirely — there the single-user
@@ -752,6 +754,10 @@ def create_hosts_router(
                     "name": host.name,
                     "owner": host.user_id,
                     "status": "online" if host_is_live(host, now=now) else "offline",
+                    # Epoch seconds. last_seen is the liveness timestamp (last
+                    # connect, heartbeat or disconnect), so stale rows stand out.
+                    "created_at": host.created_at,
+                    "last_seen": host.updated_at,
                     # Non-None marks a server-managed sandbox host (e.g.
                     # "modal"). Clients use it to hide sandbox-backed
                     # hosts from manual host pickers — they are launch
@@ -800,6 +806,8 @@ def create_hosts_router(
             "name": host.name,
             "owner": host.user_id,
             "status": "online" if host_is_live(host) else "offline",
+            "created_at": host.created_at,
+            "last_seen": host.updated_at,
             # Same semantics as list_hosts: non-None marks a
             # server-managed sandbox host (e.g. "modal").
             "sandbox_provider": host.sandbox_provider,
@@ -810,6 +818,52 @@ def create_hosts_router(
             "interactive_shells": host_registry.interactive_shells(host.host_id),
             "runners": [],
         }
+
+    @router.delete("/hosts/{host_id}")
+    async def delete_host(request: Request, host_id: str) -> dict[str, Any]:
+        """Delete an offline host registration.
+
+        Allowed for the host's owner and for administrators. Sessions bound
+        to the host are detached, not deleted. A machine that still holds
+        valid credentials registers again on its next connect.
+
+        :param request: The incoming request (for auth).
+        :param host_id: Host identifier, e.g. ``"host_a1b2c3d4..."``.
+        :returns: ``{"host_id": ..., "object": "host.deleted", "deleted": True}``.
+        :raises HTTPException: 401 when unauthenticated, 404 when the host
+            does not exist or belongs to another user, 409 when the host is
+            online or is a server-managed sandbox host.
+        """
+        user_id = require_user(request, auth_provider)
+        host = await asyncio.to_thread(host_store.get_host, host_id)
+        may_delete = host is not None and (
+            user_id is None
+            or host.user_id == user_id
+            or (
+                permission_store is not None
+                and await asyncio.to_thread(permission_store.is_admin, user_id)
+            )
+        )
+        if host is None or not may_delete:
+            # Another user's host reads as absent so host ids cannot be probed.
+            raise HTTPException(status_code=404, detail="host not found")
+        if host.sandbox_provider is not None:
+            raise HTTPException(
+                status_code=409,
+                detail="server-managed sandbox hosts are removed by the server",
+            )
+        add_audit_attrs(host_id=host_id)
+        try:
+            await asyncio.to_thread(host_store.delete_host, host_id, require_offline=True)
+        except OmnigentError as exc:
+            if exc.code != ErrorCode.CONFLICT:
+                raise
+            raise HTTPException(
+                status_code=409,
+                detail="host is online; stop it and retry once it shows offline",
+            ) from exc
+        announce_hosts_changed(host.user_id)
+        return {"host_id": host_id, "object": "host.deleted", "deleted": True}
 
     @router.get("/hosts/{host_id}/harnesses/{harness}/model-options")
     async def get_host_model_options(
