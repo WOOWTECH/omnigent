@@ -1,6 +1,9 @@
 # WOOWTECH fork 專用：以上游 v0.19.1 server image 為底，換掉：
 # 1. MCP 回應的 orchestration.py（保留 tool 失敗的 isError 標記）；
-# 2. Web UI bundle（新對話可替 OpenCode 先選模型）。
+# 2. Web UI bundle（新對話可替 OpenCode 先選模型）；
+# 3. server/app.py（/docs、/redoc、/openapi.json 預設不公開，OMNIGENT_PUBLIC_API_DOCS=1 才開；
+#    SPA fallback 只接網頁路由）；
+# 4. routes/hosts.py、stores/host_store.py（DELETE /v1/hosts/{id}；主機清單與詳情帶 created_at、last_seen）。
 # 其餘 bytes 與上游 digest 相同。
 
 # ── Web UI builder：與上游 deploy/docker/Dockerfile 的 web-builder stage 相同做法 ──
@@ -23,9 +26,17 @@ FROM ghcr.io/omnigent-ai/omnigent-server-kubernetes:v0.19.1@sha256:5746692f3c3a9
 
 # 換檔前先確認 image 內的原檔就是 git tag v0.19.1 的版本，overlay 才只帶這次的 diff。
 RUN echo '87d26269ba6f9f1984f24bcb6f50106a2c042d8c40d2cb021ae7ccf6d29b626d  /build/omnigent/server/routes/_sessions/orchestration.py' | sha256sum -c -
+RUN printf '%s\n' \
+      'eb05c113378a40ba614ae964cdb3d7a8dd231655fd4b5a53e53e41b57a9fcd48  /build/omnigent/server/app.py' \
+      '894314d31a38b900bd998f14b80f2364f3f36f2393336eb3d5bacb04c0691a26  /build/omnigent/server/routes/hosts.py' \
+      '2372d5767c3a7895295178302f8993b5bb5fdda089c33116bc73b369aea4ac15  /build/omnigent/stores/host_store.py' \
+    | sha256sum -c -
 RUN test -f /build/omnigent/server/static/web-ui/index.html
 
 COPY omnigent/server/routes/_sessions/orchestration.py /build/omnigent/server/routes/_sessions/orchestration.py
+COPY omnigent/server/app.py /build/omnigent/server/app.py
+COPY omnigent/server/routes/hosts.py /build/omnigent/server/routes/hosts.py
+COPY omnigent/stores/host_store.py /build/omnigent/stores/host_store.py
 # 整份換掉，舊 bundle 的 hash 檔名不留在 image 裡。
 RUN rm -rf /build/omnigent/server/static/web-ui
 COPY --from=web-builder /web/omnigent/server/static/web-ui /build/omnigent/server/static/web-ui
@@ -42,5 +53,22 @@ source = inspect.getsource(module._handle_mcp_tools_call)
 assert 'result["isError"] = True' in source
 assert 'mcp_response_from_tool_result(parsed_output)' in source
 assert Path('/build/omnigent/server/static/web-ui/index.html').is_file()
+
+import omnigent.server.app as app_module
+import omnigent.server.routes.hosts as hosts_module
+import omnigent.stores.host_store as host_store_module
+
+for overlay_module, overlay_path in (
+    (app_module, '/build/omnigent/server/app.py'),
+    (hosts_module, '/build/omnigent/server/routes/hosts.py'),
+    (host_store_module, '/build/omnigent/stores/host_store.py'),
+):
+    assert Path(overlay_module.__file__).resolve() == Path(overlay_path), overlay_module.__file__
+assert 'public_api_docs' in inspect.signature(app_module.create_app).parameters
+assert 'env_var_is_truthy("OMNIGENT_PUBLIC_API_DOCS", default=False)' in inspect.getsource(app_module.create_app)
+assert app_module._is_web_ui_history_fallback_path('c/conv_abc123')
+assert not app_module._is_web_ui_history_fallback_path('wp-admin')
+assert '@router.delete("/hosts/{host_id}")' in inspect.getsource(hosts_module.create_hosts_router)
+assert 'require_offline' in inspect.signature(host_store_module.HostStore.delete_host).parameters
 print('WOOWTECH v0.19.1 server overlay imported: PASS')
 PY
