@@ -1305,6 +1305,33 @@ def test_delete_host_hides_row_and_retains_cleanup_tombstone(db_uri: str) -> Non
         assert session.get(SqlHost, (0, "dcf4eb5fc0b04985ec45f79cfda95566")) is None
 
 
+def test_delete_host_require_offline_keeps_live_host(host_store: HostStore, db_uri: str) -> None:
+    """
+    A conditional delete refuses a live host but removes offline and stale ones.
+
+    A host that crashed without a clean disconnect still reads ``online`` in
+    its row; once its last-seen is past the liveness window it is deletable.
+    """
+    live_id = "a65ea0b86bd045c4b8c65cd209ef3dc4"
+    offline_id = "100f0177d8534ed491a5274fbcdf52f3"
+    stale_id = "c812cb97ed41499a8ef2bb3fa07d621b"
+    host_store.upsert_on_connect(live_id, "live-laptop", "alice@example.com")
+    host_store.upsert_on_connect(offline_id, "offline-laptop", "alice@example.com")
+    host_store.set_offline(offline_id)
+    host_store.upsert_on_connect(stale_id, "crashed-laptop", "alice@example.com")
+    _set_updated_at(db_uri, stale_id, now_epoch() - HOST_LIVENESS_TTL_S - 1)
+
+    with pytest.raises(OmnigentError) as refused:
+        host_store.delete_host(live_id, require_offline=True)
+    assert refused.value.code == ErrorCode.CONFLICT
+    assert host_store.get_host(live_id) is not None
+
+    for host_id in (offline_id, stale_id):
+        assert host_store.delete_host(host_id, require_offline=True) is not None
+        assert host_store.get_host(host_id) is None
+    assert host_store.delete_host("58f1969ad4fd4904b22545029bde3bc5", require_offline=True) is None
+
+
 def test_stale_completion_removes_host_deleted_after_detach(db_uri: str) -> None:
     store = HostStore(db_uri)
     host_id = "405a78021f6648e5ae887350047f76b5"
