@@ -1,10 +1,11 @@
 name: WOOWTECH v0.19.1 overlay QA images
 
 # WOOWTECH fork 專用：push 到這條分支時，build 並推送 server／host 兩個 overlay QA image。
+# 每條 overlay 分支只推自己的 QA tag；舊 tag（例如 20261028＝chart 0.1.15 的來源 digest）不可覆寫。
 on:
   push:
     branches:
-      - fix/omnigent-v0191-overlay-opencode-picker-20261028
+      - fix/omnigent-v0191-overlay-hardening-20261029
 
 permissions:
   contents: read
@@ -20,9 +21,9 @@ jobs:
       matrix:
         include:
           - component: server
-            image: ghcr.io/woowtech/omnigent-server-kubernetes:0.19.1-overlay-qa-20261028
+            image: ghcr.io/woowtech/omnigent-server-kubernetes:0.19.1-overlay-qa-20261029-hardening
           - component: host
-            image: ghcr.io/woowtech/omnigent-host:0.19.1-overlay-qa-20261028
+            image: ghcr.io/woowtech/omnigent-host:0.19.1-overlay-qa-20261029-hardening
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
       - uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5
