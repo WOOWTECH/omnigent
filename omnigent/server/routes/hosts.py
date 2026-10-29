@@ -845,7 +845,7 @@ def create_hosts_router(
             )
         )
         if host is None or not may_delete:
-            # Another user's host reads as absent so host ids cannot be probed.
+            # Report another user's host as absent rather than confirming it exists.
             raise HTTPException(status_code=404, detail="host not found")
         if host.sandbox_provider is not None:
             raise HTTPException(

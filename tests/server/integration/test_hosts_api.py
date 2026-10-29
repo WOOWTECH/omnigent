@@ -129,6 +129,7 @@ async def _connect_host(
     name: str = "test-laptop",
     configured_harnesses: dict[str, bool | str] | None = None,
     gateway_inference: dict[str, bool] | None = None,
+    user: str | None = None,
 ) -> ApplicationCommunicator:
     """Connect a mock host via WebSocket tunnel.
 
@@ -140,10 +141,15 @@ async def _connect_host(
         e.g. ``{"codex": False}``; ``None`` mimics an older host.
     :param gateway_inference: Gateway-inference map for the hello frame,
         e.g. ``{"codex": True}``; ``None`` mimics a host that doesn't report it.
+    :param user: Identity sent as ``x-test-user`` for the multi-user fixture;
+        ``None`` sends no identity.
     :returns: Connected ASGI communicator.
     """
     path = f"/v1/hosts/{host_id}/tunnel"
-    comm = ApplicationCommunicator(app, _websocket_scope(path))
+    scope = _websocket_scope(path)
+    if user is not None:
+        scope["headers"] = [(b"x-test-user", user.encode())]
+    comm = ApplicationCommunicator(app, scope)
     await comm.send_input({"type": "websocket.connect"})
     accepted = await comm.receive_output(timeout=budget(1.0))
     assert accepted["type"] == "websocket.accept"
@@ -1003,8 +1009,8 @@ async def test_delete_host_allows_owner_and_admin(
     """
     Verify DELETE /v1/hosts/{id} removes an offline host for its owner or an admin.
 
-    Another user's host must read as absent (404) so host ids cannot be
-    probed, and a deleted host's sessions are detached rather than deleted.
+    Another user's host reads as absent (404) rather than forbidden, and a
+    deleted host's sessions are detached rather than deleted.
     """
     app, _reg, host_store, conv_store = multi_user_app
 
@@ -1492,6 +1498,46 @@ async def test_failed_connect_does_not_offline_another_users_host(
         "Bob's failed connect to Alice's host_id flipped her host offline "
         "(set_offline ran on a connection that never registered) - DoS."
     )
+
+
+async def test_deleted_registration_lets_machine_reconnect_under_new_owner(
+    multi_user_app: tuple[FastAPI, HostRegistry, HostStore, SqlAlchemyConversationStore],
+) -> None:
+    """
+    After an admin deletes a stale registration, the machine keeps its host id.
+
+    A machine that signs in with another account is refused while the old
+    owner's row exists; deleting that row lets it reconnect without resetting
+    its host id.
+    """
+    app, registry, host_store, _cs = multi_user_app
+    host_id = "c0a4f5bd1ec44d6e9f38b6a2d5e1c7f9"
+    app.state.permission_store.ensure_user("admin@test.com", is_admin=True)
+    host_store.upsert_on_connect(host_id, "shared-laptop", "alice@test.com")
+    host_store.set_offline(host_id)
+
+    scope = _websocket_scope(f"/v1/hosts/{host_id}/tunnel")
+    scope["headers"] = [(b"x-test-user", b"bob@test.com")]
+    refused = ApplicationCommunicator(app, scope)
+    await refused.send_input({"type": "websocket.connect"})
+    closed = await refused.receive_output(timeout=budget(1.0))
+    assert closed["type"] == "websocket.close"
+    assert closed["code"] == 4009
+    with contextlib.suppress(Exception):
+        await refused.wait(timeout=budget(2.0))
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        deleted = await client.delete(
+            f"/v1/hosts/{host_id}", headers={"x-test-user": "admin@test.com"}
+        )
+    assert deleted.status_code == 200, deleted.text
+
+    comm = await _connect_host(app, registry, host_id, "shared-laptop", user="bob@test.com")
+    reconnected = host_store.get_host(host_id)
+    assert reconnected is not None
+    assert reconnected.user_id == "bob@test.com"
+    assert reconnected.status == "online"
+    await comm.send_input({"type": "websocket.disconnect", "code": 1000})
 
 
 async def test_runner_exited_report_surfaces_in_runner_status(
