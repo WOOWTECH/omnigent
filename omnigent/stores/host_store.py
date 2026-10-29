@@ -1316,7 +1316,7 @@ class HostStore:
 
         run_write_transaction(self._lifecycle_session, "admit_runner_launch", write)
 
-    def delete_host(self, host_id: str) -> Host | None:
+    def delete_host(self, host_id: str, *, require_offline: bool = False) -> Host | None:
         """
         Logically delete a host and retain pending sandbox cleanup.
 
@@ -1327,7 +1327,12 @@ class HostStore:
         deletion with managed-host generation replacement.
 
         :param host_id: Host identifier, e.g. ``"host_a1b2c3d4..."``.
+        :param require_offline: Refuse a live host (see :func:`host_is_live`).
+            Checked under the row lock, so a reconnect cannot land between the
+            check and the delete.
         :returns: The latest host snapshot, or ``None`` when already absent.
+        :raises OmnigentError: ``CONFLICT`` when *require_offline* is set and
+            the host is live.
         """
 
         def write(session: Session) -> Host | None:
@@ -1341,6 +1346,8 @@ class HostStore:
             ).scalar_one_or_none()
             if row is None:
                 return None
+            if require_offline and row.deleted_at is None and host_is_live(_row_to_host(row)):
+                raise OmnigentError("host is online", code=ErrorCode.CONFLICT)
             return delete_host_in_session(session, row)
 
         return run_write_transaction(self._lifecycle_session, "delete_host", write)
