@@ -18,10 +18,7 @@ test -f "$pi_modules/undici/package.json"
 rm -rf "$pi_modules/undici"
 mv "$work_dir/undici" "$pi_modules/undici"
 
-curl -fsSL --retry 3 https://github.com/cli/cli/releases/download/v2.103.3/gh_2.103.3_linux_amd64.tar.gz -o "$work_dir/gh.tgz"
-printf '%s  %s\n' 4c806978ffce1cec70853302a56d70ac6da4f19bae7adca4e1a8ab00633dd91d "$work_dir/gh.tgz" | sha256sum -c -
-tar -xzf "$work_dir/gh.tgz" -C "$work_dir" gh_2.103.3_linux_amd64/bin/gh
-install -m 0755 "$work_dir/gh_2.103.3_linux_amd64/bin/gh" /usr/local/bin/gh
+sh /build/woowtech-gh-security.sh
 
 test "$(npm --version)" = 12.2.2
 mkdir "$work_dir/npm-smoke"
