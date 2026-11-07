@@ -1,8 +1,14 @@
 # WOOWTECH fork 專用：以上游 v0.20.0 host image 為底，換掉：
 # 1. runner MCP 的三個檔案（tool 清單與本機 dispatch 的授權一致、未知 tool 回 protocol error）；
 # 2. host/connect.py（新對話的 OpenCode 模型清單）。
-# 其餘 bytes 與上游 digest 相同。
+# 3. 共用的 Debian 與 Python installer 安全修補。
 FROM ghcr.io/omnigent-ai/omnigent-host:v0.20.0@sha256:3f6009a0f73d73b838d6c05db984e345e6bcabd01f1c7a055cfad119fdf1c8fb
+
+# Apply the shared OS and Python installer security fixes.
+COPY deploy/docker/woowtech-runtime-security.sh deploy/docker/woowtech-pip-security.txt /build/
+RUN sh /build/woowtech-runtime-security.sh
+COPY deploy/docker/woowtech-host-security.sh /build/
+RUN sh /build/woowtech-host-security.sh
 
 # 換檔前先確認 image 內的原檔就是 git tag v0.20.0 的版本，overlay 才只帶這次的 diff。
 RUN cd /opt/venv/lib/python3.12/site-packages/omnigent/runner && printf '%s\n' \

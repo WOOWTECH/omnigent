@@ -4,7 +4,7 @@
 # 3. server/app.py（/docs、/redoc、/openapi.json 預設不公開，OMNIGENT_PUBLIC_API_DOCS=1 才開；
 #    SPA fallback 只接網頁路由；OMNIGENT_PUBLIC_HSTS=1 時所有回應帶 HSTS）；
 # 4. routes/hosts.py、stores/host_store.py（DELETE /v1/hosts/{id}；主機清單與詳情帶 created_at、last_seen）。
-# 5. oauthlib 的安全修補版（固定 wheel 雜湊，不重新解析其他依賴）。
+# 5. oauthlib 與 pip 的安全修補版（固定 wheel 雜湊），以及指定 Debian 安全更新。
 
 # ── Web UI builder：與上游 deploy/docker/Dockerfile 的 web-builder stage 相同做法 ──
 FROM --platform=$BUILDPLATFORM node:22-slim AS web-builder
@@ -23,6 +23,10 @@ RUN grep -lE 'displayName:.OpenCode.,iconKind:.opencode.,sortRank:25,capabilitie
       /web/omnigent/server/static/web-ui/assets/*.js
 
 FROM ghcr.io/omnigent-ai/omnigent-server-kubernetes:v0.20.0@sha256:5087a4e9522dda25ae4ae58681865b8c0b45cfb5cf5b02737e3de32a08accb6b
+
+# Apply the shared OS and Python installer security fixes.
+COPY deploy/docker/woowtech-runtime-security.sh deploy/docker/woowtech-pip-security.txt /build/
+RUN sh /build/woowtech-runtime-security.sh
 
 # Patch the inherited OAuth dependency without changing unrelated packages.
 COPY deploy/docker/woowtech-server-security.txt /build/woowtech-server-security.txt
