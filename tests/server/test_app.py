@@ -290,7 +290,33 @@ async def test_public_api_docs_hidden_unless_enabled(
     assert "/v1/hosts/{host_id}" in app.openapi()["paths"]
 
 
-# One deep link per top-level route in web/src/App.tsx (v0.19.1).
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("env_value", "expected"),
+    [(None, None), ("0", None), ("1", "max-age=31536000")],
+)
+async def test_hsts_header_follows_public_hsts_setting(
+    db_uri: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    env_value: str | None,
+    expected: str | None,
+) -> None:
+    """``OMNIGENT_PUBLIC_HSTS=1`` adds HSTS; local HTTP servers stay without it."""
+    if env_value is None:
+        monkeypatch.delenv("OMNIGENT_PUBLIC_HSTS", raising=False)
+    else:
+        monkeypatch.setenv("OMNIGENT_PUBLIC_HSTS", env_value)
+    app = _build_liveness_app(db_uri, tmp_path).app
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get("/health")
+
+    assert response.status_code == 200
+    assert response.headers.get("strict-transport-security") == expected
+
+
+# One deep link per top-level route in web/src/App.tsx (v0.20.0).
 _SPA_DEEP_LINKS = (
     "/",
     "/c/conv_abc123",
@@ -298,6 +324,7 @@ _SPA_DEEP_LINKS = (
     "/settings/general",
     "/settings/members",
     "/extensions/ext_demo/reports/weekly",
+    "/grid/grid_abc123",
     "/approve/conv_abc123/elicit_abc123",
     "/inbox",
     "/tasks",

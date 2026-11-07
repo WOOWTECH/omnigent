@@ -1,8 +1,8 @@
-# WOOWTECH fork 專用：以上游 v0.19.1 server image 為底，換掉：
+# WOOWTECH fork 專用：以上游 v0.20.0 server image 為底，換掉：
 # 1. MCP 回應的 orchestration.py（保留 tool 失敗的 isError 標記）；
 # 2. Web UI bundle（新對話可替 OpenCode 先選模型）；
 # 3. server/app.py（/docs、/redoc、/openapi.json 預設不公開，OMNIGENT_PUBLIC_API_DOCS=1 才開；
-#    SPA fallback 只接網頁路由）；
+#    SPA fallback 只接網頁路由；OMNIGENT_PUBLIC_HSTS=1 時所有回應帶 HSTS）；
 # 4. routes/hosts.py、stores/host_store.py（DELETE /v1/hosts/{id}；主機清單與詳情帶 created_at、last_seen）。
 # 其餘 bytes 與上游 digest 相同。
 
@@ -22,13 +22,13 @@ RUN pnpm --filter web run build
 RUN grep -lE 'displayName:.OpenCode.,iconKind:.opencode.,sortRank:25,capabilities:\[.modelPicker.\]' \
       /web/omnigent/server/static/web-ui/assets/*.js
 
-FROM ghcr.io/omnigent-ai/omnigent-server-kubernetes:v0.19.1@sha256:5746692f3c3a95502f76f83260c3e5ff36348ad8c3cdce1fab85784065e44dad
+FROM ghcr.io/omnigent-ai/omnigent-server-kubernetes:v0.20.0@sha256:5087a4e9522dda25ae4ae58681865b8c0b45cfb5cf5b02737e3de32a08accb6b
 
-# 換檔前先確認 image 內的原檔就是 git tag v0.19.1 的版本，overlay 才只帶這次的 diff。
-RUN echo '87d26269ba6f9f1984f24bcb6f50106a2c042d8c40d2cb021ae7ccf6d29b626d  /build/omnigent/server/routes/_sessions/orchestration.py' | sha256sum -c -
+# 換檔前先確認 image 內的原檔就是 git tag v0.20.0 的版本，overlay 才只帶這次的 diff。
+RUN echo '28008d3d658f4d925a47818af2a50148745bdd6d8a0710345c76ac65fac046fd  /build/omnigent/server/routes/_sessions/orchestration.py' | sha256sum -c -
 RUN printf '%s\n' \
-      'eb05c113378a40ba614ae964cdb3d7a8dd231655fd4b5a53e53e41b57a9fcd48  /build/omnigent/server/app.py' \
-      '894314d31a38b900bd998f14b80f2364f3f36f2393336eb3d5bacb04c0691a26  /build/omnigent/server/routes/hosts.py' \
+      '6b0292df57e9b5a01671aa7d2ad168ba531c95daa0512b3c6a0bd022c873360e  /build/omnigent/server/app.py' \
+      '1280d24a3ded9057a53f195bf2b22d0fd0aa7119f05b4e4e6f4db0737db10b3d  /build/omnigent/server/routes/hosts.py' \
       '2372d5767c3a7895295178302f8993b5bb5fdda089c33116bc73b369aea4ac15  /build/omnigent/stores/host_store.py' \
     | sha256sum -c -
 RUN test -f /build/omnigent/server/static/web-ui/index.html
@@ -47,7 +47,7 @@ import inspect
 import importlib.metadata
 import omnigent.server.routes._sessions.orchestration as module
 
-assert importlib.metadata.version('omnigent') == '0.19.1', importlib.metadata.version('omnigent')
+assert importlib.metadata.version('omnigent') == '0.20.0', importlib.metadata.version('omnigent')
 assert Path(module.__file__).resolve() == Path('/build/omnigent/server/routes/_sessions/orchestration.py')
 source = inspect.getsource(module._handle_mcp_tools_call)
 assert 'result["isError"] = True' in source
@@ -68,7 +68,9 @@ assert 'public_api_docs' in inspect.signature(app_module.create_app).parameters
 assert 'env_var_is_truthy("OMNIGENT_PUBLIC_API_DOCS", default=False)' in inspect.getsource(app_module.create_app)
 assert app_module._is_web_ui_history_fallback_path('c/conv_abc123')
 assert not app_module._is_web_ui_history_fallback_path('wp-admin')
+assert app_module._is_web_ui_history_fallback_path('grid/grid_abc123')
+assert 'OMNIGENT_PUBLIC_HSTS' in inspect.getsource(app_module.create_app)
 assert '@router.delete("/hosts/{host_id}")' in inspect.getsource(hosts_module.create_hosts_router)
 assert 'require_offline' in inspect.signature(host_store_module.HostStore.delete_host).parameters
-print('WOOWTECH v0.19.1 server overlay imported: PASS')
+print('WOOWTECH v0.20.0 server overlay imported: PASS')
 PY
