@@ -10,6 +10,10 @@ RUN sh /build/woowtech-runtime-security.sh
 COPY deploy/docker/woowtech-host-security.sh deploy/docker/woowtech-gh-security.sh /build/
 RUN sh /build/woowtech-host-security.sh
 
+# Managed sessions cannot install a missing CLI at launch time.
+COPY deploy/docker/woowtech-opencode-install.sh /build/
+RUN sh /build/woowtech-opencode-install.sh
+
 # 換檔前先確認 image 內的原檔就是 git tag v0.20.0 的版本，overlay 才只帶這次的 diff。
 RUN cd /opt/venv/lib/python3.12/site-packages/omnigent/runner && printf '%s\n' \
       'fa41ddffb926969dba611bd4901e5e01e0977da555949b003e5ced6392b182f8  mcp_routes.py' \
