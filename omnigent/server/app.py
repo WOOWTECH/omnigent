@@ -25,6 +25,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from sqlalchemy.exc import StatementError
+from starlette.datastructures import MutableHeaders
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.gzip import GZipMiddleware
 from starlette.responses import Response
@@ -426,6 +427,7 @@ _WEB_UI_ROUTE_PREFIXES = frozenset(
         "c",
         "canvas",
         "extensions",
+        "grid",
         "inbox",
         "login",
         "members",
@@ -671,6 +673,32 @@ class _FastAPICallNext(Protocol):
         :returns: Awaitable that resolves to the downstream response.
         """
         ...
+
+
+class _StrictTransportSecurityMiddleware:
+    """Add an HSTS header to every HTTP response.
+
+    Pure ASGI so streaming responses stay unbuffered. Enabled with
+    ``OMNIGENT_PUBLIC_HSTS`` by deployments whose public URL is HTTPS only;
+    it is off by default because plain-HTTP local servers must not send it.
+    """
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        async def send_with_hsts(message: Message) -> None:
+            if message["type"] == "http.response.start":
+                MutableHeaders(scope=message).setdefault(
+                    "Strict-Transport-Security", "max-age=31536000"
+                )
+            await send(message)
+
+        await self.app(scope, receive, send_with_hsts)
 
 
 class _WebSocketMetricsMiddleware:
@@ -2567,6 +2595,8 @@ def create_app(
     app.state.server_metrics = server_metrics
     app.state.server_metrics_otel = server_metrics_otel
     app.add_middleware(_WebSocketMetricsMiddleware, metrics=server_metrics)
+    if env_var_is_truthy("OMNIGENT_PUBLIC_HSTS", default=False):
+        app.add_middleware(_StrictTransportSecurityMiddleware)
     # CSWSH guard: reject cross-origin WebSocket handshakes before any
     # route accepts them. Added after the metrics middleware so it is the
     # outermost WS middleware — a forbidden origin is closed without even
