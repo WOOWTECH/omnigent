@@ -7,7 +7,7 @@ FROM ghcr.io/omnigent-ai/omnigent-host:v0.20.0@sha256:3f6009a0f73d73b838d6c05db9
 # Apply the shared OS and Python installer security fixes.
 COPY deploy/docker/woowtech-runtime-security.sh deploy/docker/woowtech-pip-security.txt /build/
 RUN sh /build/woowtech-runtime-security.sh
-COPY deploy/docker/woowtech-host-security.sh /build/
+COPY deploy/docker/woowtech-host-security.sh deploy/docker/woowtech-gh-security.sh /build/
 RUN sh /build/woowtech-host-security.sh
 
 # 換檔前先確認 image 內的原檔就是 git tag v0.20.0 的版本，overlay 才只帶這次的 diff。
