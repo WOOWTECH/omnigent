@@ -41,9 +41,9 @@ docker compose down -v
 
 ## Release features
 
-Release features are deployment-wide and off by default. Enable one or more
-with the comma-separated `OMNIGENT_FEATURES` variable in `.env`, then recreate
-the server container:
+Override release-feature defaults with comma-separated names in
+`OMNIGENT_FEATURES` in `.env`: a name enables a feature, and `-name` disables
+it. Empty or unset uses the defaults. Then recreate the server container:
 
 ```dotenv
 OMNIGENT_FEATURES=usage_page
@@ -57,8 +57,9 @@ curl -s http://localhost:8000/v1/info | jq '.features'
 Known keys and their lifecycle are documented in
 [`designs/FEATURE_FLAGS.md`](../../designs/FEATURE_FLAGS.md). Unknown keys fail
 server startup so a typo cannot silently produce the wrong rollout. To roll
-back, remove the key (or empty the variable), run `docker compose up -d` again,
-and reload the web app.
+back, add `-feature_name`, run `docker compose up -d` again, and reload the
+web app. Runner overrides such as `-claude_osc_status` must also be set on
+separately running hosts; restart their host/runners and launch fresh terminals.
 
 ## Extra built-in agents
 
@@ -401,6 +402,7 @@ trusts whatever value reaches it.
 | `OMNIGENT_AUTH_HEADER_STRIP_PREFIX` | unset (strip nothing) | Header-mode only: prefix removed from the identity header value. Set to `accounts.google.com:` for Google IAP's `X-Goog-Authenticated-User-Email`. |
 | `OMNIGENT_OIDC_*` | unset | OIDC config — required in oidc mode (issuer set, or `AUTH_PROVIDER=oidc`). See `.env.example`. |
 | `OMNIGENT_BUILTIN_AGENT_DIRS` | unset | Colon-separated paths (in-container) to extra always-available built-in agents, seeded once at startup. See [Extra built-in agents](#extra-built-in-agents). |
+| `OMNIGENT_PUBLIC_API_DOCS` | unset (hidden) | `1` serves `/docs`, `/redoc` and `/openapi.json` without authentication. Hidden by default so a public deployment does not publish its route map; the repo's `openapi.json` stays the reference for SDK tooling. |
 | `PYPI_INDEX_URL` | `https://pypi.org/simple` | Build-time PyPI index — override only behind a corporate proxy. |
 
 `DATABASE_URL` and `ARTIFACT_DIR` are computed by compose and

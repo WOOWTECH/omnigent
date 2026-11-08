@@ -209,6 +209,69 @@ async def test_schemas_for_happy_path_parses_tools() -> None:
 
 
 @pytest.mark.asyncio
+async def test_schemas_for_ignores_local_tools_in_mixed_proxy_catalog() -> None:
+    """Runner injection only takes external MCP tools from the public catalog."""
+    rpc_resp = _json_resp(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": {
+                "tools": [
+                    {
+                        "name": "github__search",
+                        "description": "Search",
+                        "inputSchema": {"type": "object", "properties": {}},
+                    },
+                    {
+                        "name": "sys_os_read",
+                        "description": "Read a file",
+                        "inputSchema": {"type": "object", "properties": {}},
+                    },
+                ]
+            },
+        }
+    )
+    manager = _make_manager(_StubTransport([rpc_resp]))
+
+    result = await manager.schemas_for(_make_spec("github"))
+
+    assert result.tool_names == {"github__search"}
+    assert [schema["name"] for schema in result.schemas] == ["github__search"]
+
+
+@pytest.mark.asyncio
+async def test_schemas_for_keeps_registry_tools_named_like_local_tools() -> None:
+    """Registry services are external: a local-looking name there is not a duplicate."""
+    rpc_resp = _json_resp(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": {
+                "tools": [
+                    {
+                        "name": "sys_os_read",
+                        "description": "Tracker read",
+                        "inputSchema": {"type": "object", "properties": {}},
+                    },
+                ]
+            },
+        }
+    )
+    transport = _StubTransport([rpc_resp])
+    manager = _make_manager(transport)
+    spec = AgentSpec(
+        spec_version=1,
+        name="test-agent",
+        mcp_servers=[MCPServerConfig(name="tracker", transport="registry")],
+    )
+
+    result = await manager.schemas_for(spec)
+
+    assert result.tool_names == {"tracker__sys_os_read"}
+    assert [call.url for call in transport.calls] == ["http://ap-server/v1/mcp/tracker"]
+
+
+@pytest.mark.asyncio
 async def test_schemas_for_normalizes_null_input_schema() -> None:
     """A tool with ``inputSchema: null`` must normalize to ``{type: object, properties: {}}``.
 

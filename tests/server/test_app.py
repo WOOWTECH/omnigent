@@ -10,10 +10,12 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
+from typing import Any
 
 import httpx
 import pytest
@@ -200,6 +202,8 @@ class _LivenessApp:
 def _build_liveness_app(
     db_uri: str,
     tmp_path: Path,
+    *,
+    public_api_docs: bool | None = None,
 ) -> _LivenessApp:
     """
     Build a real app + conversation store wired for liveness tests.
@@ -207,6 +211,8 @@ def _build_liveness_app(
     :param db_uri: SQLite URI for the shared test db (the ``db_uri``
         fixture).
     :param tmp_path: Per-test temp dir for artifacts and cache.
+    :param public_api_docs: Forwarded to ``create_app``; ``None`` leaves the
+        choice to ``OMNIGENT_PUBLIC_API_DOCS``.
     :returns: A :class:`_LivenessApp` carrying the app to drive
         ``/health`` against and the store to seed conversations in.
     """
@@ -236,8 +242,147 @@ def _build_liveness_app(
             artifact_store=artifact_store,
             cache_dir=tmp_path / "cache",
         ),
+        public_api_docs=public_api_docs,
     )
     return _LivenessApp(app=app, conversation_store=conversation_store)
+
+
+_API_DOC_PATHS = ("/docs", "/redoc", "/openapi.json")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("env_value", "argument", "expected_status"),
+    [
+        (None, None, 404),
+        ("0", None, 404),
+        ("1", None, 200),
+        ("1", False, 404),
+        ("0", True, 200),
+    ],
+)
+async def test_public_api_docs_hidden_unless_enabled(
+    db_uri: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    env_value: str | None,
+    argument: bool | None,
+    expected_status: int,
+) -> None:
+    """Anonymous callers get no generated API docs unless the deployment opts in.
+
+    ``OMNIGENT_PUBLIC_API_DOCS=1`` (or ``public_api_docs=True``, which wins)
+    re-exposes them. ``/health`` stays public, and build and SDK tooling keep
+    reading the schema from ``app.openapi()`` either way.
+    """
+    if env_value is None:
+        monkeypatch.delenv("OMNIGENT_PUBLIC_API_DOCS", raising=False)
+    else:
+        monkeypatch.setenv("OMNIGENT_PUBLIC_API_DOCS", env_value)
+    app = _build_liveness_app(db_uri, tmp_path, public_api_docs=argument).app
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        statuses = {path: (await client.get(path)).status_code for path in _API_DOC_PATHS}
+        health = await client.get("/health")
+
+    assert statuses == dict.fromkeys(_API_DOC_PATHS, expected_status)
+    assert health.status_code == 200
+    assert "/v1/hosts/{host_id}" in app.openapi()["paths"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("env_value", "expected"),
+    [(None, None), ("0", None), ("1", "max-age=31536000")],
+)
+async def test_hsts_header_follows_public_hsts_setting(
+    db_uri: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    env_value: str | None,
+    expected: str | None,
+) -> None:
+    """``OMNIGENT_PUBLIC_HSTS=1`` adds HSTS; local HTTP servers stay without it."""
+    if env_value is None:
+        monkeypatch.delenv("OMNIGENT_PUBLIC_HSTS", raising=False)
+    else:
+        monkeypatch.setenv("OMNIGENT_PUBLIC_HSTS", env_value)
+    app = _build_liveness_app(db_uri, tmp_path).app
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get("/health")
+
+    assert response.status_code == 200
+    assert response.headers.get("strict-transport-security") == expected
+
+
+# One deep link per top-level route in web/src/App.tsx (v0.20.0).
+_SPA_DEEP_LINKS = (
+    "/",
+    "/c/conv_abc123",
+    "/canvas/c/conv_abc123",
+    "/settings/general",
+    "/settings/members",
+    "/extensions/ext_demo/reports/weekly",
+    "/grid/grid_abc123",
+    "/approve/conv_abc123/elicit_abc123",
+    "/inbox",
+    "/tasks",
+    "/usage",
+    "/login",
+    "/register",
+    "/members",
+    "/policies",
+)
+
+
+@pytest.mark.asyncio
+async def test_spa_history_fallback_serves_ui_routes_and_rejects_probes(tmp_path: Path) -> None:
+    """Deep links into the web UI still boot the SPA; other static misses 404.
+
+    Unknown top-level paths and dot segments no longer receive the HTML shell
+    as a 200, and the hidden docs routes stay 404 rather than reaching the SPA.
+    """
+    web_ui_dist = tmp_path / "web-ui"
+    web_ui_dist.mkdir()
+    (web_ui_dist / "index.html").write_text("<!doctype html><div id='root'></div>")
+
+    app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
+    app.mount("/", server_app._SPAStaticFiles(directory=web_ui_dist, html=True))
+    probes = (
+        "/.env",
+        "/.git/config",
+        "/settings/.git/config",
+        *_API_DOC_PATHS,
+        "/wp-admin",
+        "/acceptance-probe-miss",
+    )
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        deep_links = {path: await client.get(path) for path in _SPA_DEEP_LINKS}
+        misses = {path: await client.get(path) for path in probes}
+
+    for path, response in deep_links.items():
+        assert response.status_code == 200, path
+        assert response.headers["content-type"].startswith("text/html"), path
+    for path, response in misses.items():
+        assert response.status_code == 404, path
+
+
+def test_spa_route_prefixes_match_web_app_routes() -> None:
+    """The SPA fallback allowlist names exactly the web app's top-level routes.
+
+    A route added to ``web/src/App.tsx`` but missing from
+    ``_WEB_UI_ROUTE_PREFIXES`` would 404 on refresh or when opened as a link.
+    """
+    app_tsx = Path(__file__).resolve().parents[2] / "web" / "src" / "App.tsx"
+    if not app_tsx.exists():
+        pytest.skip("web/src/App.tsx not present (server-only checkout)")
+    route_prefixes = set(
+        re.findall(r"path=\{`\$\{prefix\}/([A-Za-z0-9_-]+)", app_tsx.read_text(encoding="utf-8"))
+    )
+    assert route_prefixes, "could not parse route paths from web/src/App.tsx"
+    assert route_prefixes == server_app._WEB_UI_ROUTE_PREFIXES
 
 
 @pytest.mark.asyncio
@@ -477,6 +622,7 @@ def _build_branding_app(
     label: str,
     *,
     server_config: dict[str, object] | None = None,
+    **create_app_kwargs: Any,
 ) -> FastAPI:
     from omnigent.stores.file_store.sqlalchemy_store import SqlAlchemyFileStore
 
@@ -491,7 +637,86 @@ def _build_branding_app(
             cache_dir=tmp_path / f"cache-{label}",
         ),
         server_config=server_config,
+        **create_app_kwargs,
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("server_config", "create_app_kwargs", "expected"),
+    [
+        (
+            {},
+            {},
+            {
+                "extensions": [".db", ".docx", ".pptx", ".sqlite", ".sqlite3", ".xlsx", ".zip"],
+                "all_types": False,
+            },
+        ),
+        (
+            {"filesystem_attachment_allowed_extensions": [".gz"]},
+            {},
+            {"extensions": [".gz"], "all_types": False},
+        ),
+        # A deployment-supplied value or callable takes precedence over the config file.
+        (
+            {"filesystem_attachment_allowed_extensions": [".gz"]},
+            {"filesystem_attachment_allowed_extensions": [".har"]},
+            {"extensions": [".har"], "all_types": False},
+        ),
+        (
+            {"filesystem_attachment_allowed_extensions": [".gz"]},
+            {"filesystem_attachment_allowed_extensions": lambda: ["*"]},
+            {
+                "extensions": [".db", ".docx", ".pptx", ".sqlite", ".sqlite3", ".xlsx", ".zip"],
+                "all_types": True,
+            },
+        ),
+    ],
+)
+async def test_info_reports_the_filesystem_attachment_policy(
+    db_uri: str,
+    runtime_init: None,
+    tmp_path: Path,
+    server_config: dict[str, object],
+    create_app_kwargs: dict[str, Any],
+    expected: dict[str, object],
+) -> None:
+    """Clients read which uploads become files from /v1/info."""
+    app = _build_branding_app(
+        db_uri,
+        tmp_path,
+        "attachments",
+        server_config=server_config,
+        **create_app_kwargs,
+    )
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        info = (await client.get("/v1/info")).json()
+
+    assert info["filesystem_attachments"] == expected
+
+
+async def test_info_evaluates_a_callable_policy_per_request(
+    db_uri: str,
+    runtime_init: None,
+    tmp_path: Path,
+) -> None:
+    """A callable policy can change while the server runs, e.g. behind a feature flag."""
+    policies = iter([[".gz"], ["*"]])
+    app = _build_branding_app(
+        db_uri,
+        tmp_path,
+        "attachments",
+        filesystem_attachment_allowed_extensions=lambda: next(policies),
+    )
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        first = (await client.get("/v1/info")).json()["filesystem_attachments"]
+        second = (await client.get("/v1/info")).json()["filesystem_attachments"]
+
+    assert first == {"extensions": [".gz"], "all_types": False}
+    assert second["all_types"] is True
 
 
 def test_session_title_instructions_are_wired_into_coordinator(
@@ -759,9 +984,10 @@ async def test_branding_missing_at_startup_remains_missing_until_app_recreation(
 
 @pytest.mark.asyncio
 async def test_branding_openapi_declares_binary_images_and_typed_info(
-    client: httpx.AsyncClient,
+    app: FastAPI,
 ) -> None:
-    schema = (await client.get("/openapi.json")).json()
+    # The schema comes from the app: the /openapi.json route is hidden by default.
+    schema = app.openapi()
     logo_response = schema["paths"]["/v1/branding/logo/{variant}"]["get"]["responses"]["200"]
     assert set(logo_response["content"]) == {
         "image/gif",
@@ -965,6 +1191,60 @@ async def test_health_unbound_imported_session_reads_offline(
     assert sessions[imported.id]["runner_online"] is False
     # Plain unbound session → reachable in-process.
     assert sessions[plain.id]["runner_online"] is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("host_sharded", "status", "code"),
+    [(True, 400, "wrong_replica"), (None, 409, "conflict")],
+)
+async def test_host_route_for_live_host_on_another_replica(
+    db_uri: str,
+    tmp_path: Path,
+    host_sharded: bool | None,
+    status: int,
+    code: str,
+) -> None:
+    """
+    A live host absent from this replica is re-addressable only when sharded.
+
+    The web client retries a host-keyed request without its routing key only
+    on 400 ``wrong_replica``. A 409 on a sharded deployment leaves the new-chat
+    model picker loading for a host that is online on another replica.
+    ``None`` omits ``host_sharded`` to cover the constructor default.
+    """
+    from omnigent.server.app import create_app
+    from omnigent.server.routes._host_launch import configure_host_sharding
+    from omnigent.stores.conversation_store.sqlalchemy_store import (
+        SqlAlchemyConversationStore,
+    )
+    from omnigent.stores.file_store.sqlalchemy_store import SqlAlchemyFileStore
+    from omnigent.stores.host_store import HostStore
+
+    host_id = "host_0123456789abcdef0123456789abcdef"
+    host_store = HostStore(db_uri)
+    # Online and freshly seen, but its tunnel never registered on this replica.
+    host_store.upsert_on_connect(host_id, "laptop", "local")
+    artifact_store = LocalArtifactStore(str(tmp_path / "artifacts"))
+    sharding = {} if host_sharded is None else {"host_sharded": host_sharded}
+    try:
+        app = create_app(
+            agent_store=SqlAlchemyAgentStore(db_uri),
+            file_store=SqlAlchemyFileStore(db_uri),
+            conversation_store=SqlAlchemyConversationStore(db_uri),
+            artifact_store=artifact_store,
+            host_store=host_store,
+            agent_cache=AgentCache(artifact_store=artifact_store, cache_dir=tmp_path / "cache"),
+            **sharding,
+        )
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as c:
+            resp = await c.get(f"/v1/hosts/{host_id}/harnesses/claude-native/model-options")
+    finally:
+        configure_host_sharding(False)
+
+    assert resp.status_code == status, resp.text
+    assert resp.json()["error"]["code"] == code
 
 
 @dataclass(frozen=True)
@@ -2349,6 +2629,255 @@ async def _reconnect_with_initialize(
     with caplog.at_level(logging.INFO, logger="omnigent.server.app"):
         await captured["callback"](runner_id, connection)  # type: ignore[operator]
     return [r for r in caplog.records if r.name == "omnigent.server.app"]
+
+
+@pytest.mark.asyncio
+async def test_on_runner_connect_defers_idle_tree_initialization_until_demand(
+    db_uri: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Idle trees attach on reconnect without starting runner runtimes."""
+    from omnigent.entities import Conversation
+    from omnigent.runner.routing import RoutedRunner
+    from omnigent.server.routes import sessions as sessions_routes
+    from omnigent.server.routes._sessions.orchestration import (
+        _ensure_runner_session_initialized,
+    )
+
+    app, captured = _build_minimal_app(db_uri, tmp_path, monkeypatch)
+    runner_id = "runner_idle_reconnect_test"
+    idle_id, archived_id, active_parent_id, orphan_parent_id = _bind_sessions(
+        db_uri, runner_id, count=4
+    )
+    store = SqlAlchemyConversationStore(db_uri)
+    idle = store.get_conversation(idle_id)
+    archived = store.get_conversation(archived_id)
+    active_parent = store.get_conversation(active_parent_id)
+    orphan_parent = store.get_conversation(orphan_parent_id)
+    assert idle is not None and archived is not None
+    assert active_parent is not None and orphan_parent is not None
+    store.set_session_live_status(idle.id, "idle")
+    store.set_session_live_status(archived.id, "running")
+    store.update_conversation(archived.id, archived=True)
+    store.set_session_live_status(active_parent.id, "idle")
+    active_child = store.create_conversation(
+        agent_id=active_parent.agent_id,
+        runner_id=runner_id,
+        kind="sub_agent",
+        parent_conversation_id=active_parent.id,
+    )
+    store.set_session_live_status(active_child.id, "running")
+    store.set_session_live_status(orphan_parent.id, "idle")
+    idle_child = store.create_conversation(
+        agent_id=orphan_parent.agent_id,
+        runner_id=runner_id,
+        kind="sub_agent",
+        parent_conversation_id=orphan_parent.id,
+    )
+    store.set_session_live_status(idle_child.id, "idle")
+    orphan = store.create_conversation(
+        agent_id=orphan_parent.agent_id,
+        runner_id="offline_runner",
+        kind="sub_agent",
+        parent_conversation_id=idle_child.id,
+    )
+    store.set_session_live_status(orphan.id, "running")
+    connection = _attach_live_connection(app, monkeypatch, runner_id)
+    monkeypatch.setattr(
+        app.state.tunnel_registry, "get", lambda rid: connection if rid == runner_id else None
+    )
+    routed = RoutedRunner(runner_id=runner_id, client=object())  # type: ignore[arg-type]
+    app.state.runner_router.client_for_session_resources = lambda *_a, **_k: routed  # type: ignore[assignment]
+    initialized: list[tuple[str, bool]] = []
+
+    async def _initialize(conv: Conversation, *_a: object, **kwargs: object) -> httpx.Response:
+        initialized.append((conv.id, bool(kwargs.get("suppress_recovery_turn"))))
+        return httpx.Response(
+            201,
+            json={"session_init_protocol_version": 2, "terminal_ready": True},
+            request=httpx.Request("POST", "http://runner/v1/sessions"),
+        )
+
+    async def _noop_async(*_a: object, **_k: object) -> None:
+        return None
+
+    monkeypatch.setattr(app.state.runner_session_initializer, "initialize", _initialize)
+    monkeypatch.setattr(sessions_routes, "_ensure_runner_relay_ready", _noop_async)
+
+    await captured["callback"](runner_id, connection)  # type: ignore[operator]
+
+    assert set(initialized) == {
+        (active_parent.id, False),
+        (orphan_parent.id, False),
+        (active_child.id, False),
+        (idle_child.id, True),
+        (orphan.id, False),
+    }
+    initialized_ids = [session_id for session_id, _ in initialized]
+    assert initialized_ids.index(active_parent.id) < initialized_ids.index(active_child.id)
+    assert initialized_ids.index(orphan_parent.id) < initialized_ids.index(idle_child.id)
+    assert initialized_ids.index(idle_child.id) < initialized_ids.index(orphan.id)
+    assert store.get_conversation(orphan.id).runner_id == runner_id  # type: ignore[union-attr]
+
+    refreshed_idle = store.get_conversation(idle.id)
+    assert refreshed_idle is not None
+    initialized_on_demand = await _ensure_runner_session_initialized(
+        idle.id,
+        refreshed_idle,
+        routed.client,
+        store,
+        app.state.runner_session_initializer,
+        suppress_recovery_turn=True,
+        require_success=True,
+    )
+
+    assert initialized_on_demand is True
+    assert initialized[-1] == (idle.id, True)
+    assert all(session_id != archived.id for session_id, _ in initialized)
+
+
+@pytest.mark.asyncio
+async def test_on_runner_connect_logs_deferred_init_event_for_idle_and_archived(
+    db_uri: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Reconnect logs runner_session_init_deferred event with reason for idle/archived sessions."""
+    from omnigent.entities import Conversation
+    from omnigent.runner.routing import RoutedRunner
+    from omnigent.server.routes import sessions as sessions_routes
+
+    app, captured = _build_minimal_app(db_uri, tmp_path, monkeypatch)
+    runner_id = "runner_deferred_event_test"
+    idle_id, archived_id, active_id = _bind_sessions(db_uri, runner_id, count=3)
+    store = SqlAlchemyConversationStore(db_uri)
+    idle = store.get_conversation(idle_id)
+    archived = store.get_conversation(archived_id)
+    active = store.get_conversation(active_id)
+    assert idle is not None and archived is not None and active is not None
+    store.set_session_live_status(idle.id, "idle")
+    store.set_session_live_status(archived.id, "running")
+    store.update_conversation(archived.id, archived=True)
+    store.set_session_live_status(active.id, "running")
+    connection = _attach_live_connection(app, monkeypatch, runner_id)
+    monkeypatch.setattr(
+        app.state.tunnel_registry, "get", lambda rid: connection if rid == runner_id else None
+    )
+    routed = RoutedRunner(runner_id=runner_id, client=object())  # type: ignore[arg-type]
+    app.state.runner_router.client_for_session_resources = lambda *_a, **_k: routed  # type: ignore[assignment]
+
+    async def _initialize(conv: Conversation, *_a: object, **_k: object) -> httpx.Response:
+        return httpx.Response(
+            201,
+            json={"session_init_protocol_version": 2, "terminal_ready": True},
+            request=httpx.Request("POST", "http://runner/v1/sessions"),
+        )
+
+    async def _noop_async(*_a: object, **_k: object) -> None:
+        return None
+
+    monkeypatch.setattr(app.state.runner_session_initializer, "initialize", _initialize)
+    monkeypatch.setattr(sessions_routes, "_ensure_runner_relay_ready", _noop_async)
+
+    with caplog.at_level(logging.INFO):
+        await captured["callback"](runner_id, connection)  # type: ignore[operator]
+
+    deferred_events = [
+        r
+        for r in caplog.records
+        if r.name == "omnigent.server.app"
+        and getattr(r, "event_name", "") == "runner_session_init_deferred"
+    ]
+    # Check we have events for idle and archived sessions, but not active
+    assert len(deferred_events) == 2
+    messages = {r.getMessage() for r in deferred_events}
+    # Verify both idle and archived session IDs appear in the logs with the right reason
+    assert any(f"session={idle.id}" in msg and "reason=idle" in msg for msg in messages)
+    assert any(f"session={archived.id}" in msg and "reason=archived" in msg for msg in messages)
+    # Verify active session does not have a deferred event
+    assert not any(f"session={active.id}" in msg for msg in messages)
+    decisions = {
+        record.session_id: record.attributes
+        for record in caplog.records
+        if getattr(record, "event_name", None) == "runner_session_init_decision"
+    }
+    assert decisions[idle.id]["decision"] == "defer"
+    assert decisions[idle.id]["reason"] == "idle"
+    assert decisions[idle.id]["live_status"] == "idle"
+    assert decisions[idle.id]["pending_elicitation_count"] == 0
+    assert decisions[idle.id]["has_last_task_error"] is False
+    assert decisions[archived.id]["reason"] == "archived"
+    assert decisions[archived.id]["archived"] is True
+    assert decisions[active.id]["decision"] == "initialize_now"
+    for attrs in decisions.values():
+        assert attrs["runner_generation"] == 1
+        assert attrs["runner_id"] == runner_id
+        assert attrs["init_trigger"] == "runner_connect"
+        assert "server_commit_sha" in attrs
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failed_read", ["list_child_conversation_ids_page", "get_conversations"])
+async def test_on_runner_connect_attaches_sessions_when_child_scan_fails(
+    db_uri: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failed_read: str,
+) -> None:
+    from omnigent.entities import Conversation
+    from omnigent.runner.routing import RoutedRunner
+    from omnigent.server.routes import sessions as sessions_routes
+    from omnigent.stores.conversation_store.sqlalchemy_store import SqlAlchemyConversationStore
+
+    app, captured = _build_minimal_app(db_uri, tmp_path, monkeypatch)
+    runner_id = "runner_scan_failure_test"
+    root_id, other_id = _bind_sessions(db_uri, runner_id, count=2)
+    store = SqlAlchemyConversationStore(db_uri)
+    store.set_session_live_status(root_id, "idle")
+    store.set_session_live_status(other_id, "idle")
+    orphan = store.create_conversation(
+        agent_id=store.get_conversation(root_id).agent_id,  # type: ignore[union-attr]
+        runner_id="offline_runner",
+        kind="sub_agent",
+        parent_conversation_id=root_id,
+    )
+    connection = _attach_live_connection(app, monkeypatch, runner_id)
+    routed = RoutedRunner(runner_id=runner_id, client=object())  # type: ignore[arg-type]
+    app.state.runner_router.client_for_session_resources = lambda *_a, **_k: routed  # type: ignore[assignment]
+    attached: list[str] = []
+    initialized: list[str] = []
+    monkeypatch.setattr(
+        sessions_routes,
+        "_ensure_runner_relay",
+        lambda session_id, *_a, **_k: attached.append(session_id),
+    )
+
+    async def _initialize(conv: Conversation, *_a: object, **_k: object) -> httpx.Response:
+        initialized.append(conv.id)
+        return httpx.Response(201, request=httpx.Request("POST", "http://runner/v1/sessions"))
+
+    monkeypatch.setattr(app.state.runner_session_initializer, "initialize", _initialize)
+    original = getattr(SqlAlchemyConversationStore, failed_read)
+    failed = False
+
+    def _fail_once(self: SqlAlchemyConversationStore, *args: object, **kwargs: object) -> object:
+        nonlocal failed
+        if not failed and (
+            failed_read != "get_conversations"
+            or (isinstance(args[0], list) and orphan.id in args[0])
+        ):
+            failed = True
+            raise RuntimeError("child scan unavailable")
+        return original(self, *args, **kwargs)
+
+    monkeypatch.setattr(SqlAlchemyConversationStore, failed_read, _fail_once)
+    await captured["callback"](runner_id, connection)  # type: ignore[operator]
+
+    assert failed
+    assert set(attached) == {root_id, other_id}
+    assert set(initialized) == {root_id, other_id}
 
 
 @pytest.mark.asyncio

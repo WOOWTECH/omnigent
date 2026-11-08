@@ -38,6 +38,7 @@ from omnigent.entities import Conversation
 from omnigent.errors import ErrorCode, OmnigentError
 from omnigent.harness_aliases import canonicalize_harness
 from omnigent.host.frames import (
+    CAP_REFRESH_HARNESSES,
     HARNESS_NOT_CONFIGURED_ERROR_CODE,
     WORKSPACE_MISSING_ERROR_CODE,
     HostCreateDirFrame,
@@ -45,6 +46,7 @@ from omnigent.host.frames import (
     HostInstallHarnessFrame,
     HostLaunchRunnerFrame,
     HostListDirFrame,
+    HostRefreshHarnessesFrame,
     HostStoreSecretFrame,
     classify_launch_refusal,
     encode_host_frame,
@@ -72,6 +74,7 @@ from omnigent.server.routes._workspace_validation import (
     _is_windows_absolute_path,
     restore_host_filesystem_url_path,
 )
+from omnigent.server.routes.sessions import announce_hosts_changed
 from omnigent.server.schemas import SessionGitOptions
 from omnigent.stores import AgentStore, ConversationStore
 from omnigent.stores.host_store import HostStore, host_is_live
@@ -124,6 +127,8 @@ _MODEL_OPTIONS_TIMEOUT_S = 15.0
 # headroom) keeps a genuine slow install from timing out at the server while
 # the host is still succeeding — a "504 but actually installed" outcome.
 _INSTALL_HARNESS_TIMEOUT_S = 420.0
+# A refresh only probes local CLI state; keep the UI responsive if a host stalls.
+_REFRESH_HARNESSES_TIMEOUT_S = 30.0
 
 
 # ``/v1/hosts/{id}/*`` routes share the wrong-replica-vs-offline classification
@@ -206,7 +211,7 @@ async def _proxy_model_options(
             status_code=502,
             detail=f"host '{host_conn.host_id}' connection lost",
         ) from exc
-    except asyncio.TimeoutError as exc:
+    except TimeoutError as exc:
         raise HTTPException(
             status_code=504,
             detail=(
@@ -274,7 +279,7 @@ async def _proxy_list_dir(
             ) from exc
         try:
             return await asyncio.wait_for(future, timeout=_LIST_DIR_TIMEOUT_S)
-        except asyncio.TimeoutError as exc:
+        except TimeoutError as exc:
             raise HTTPException(
                 status_code=504,
                 detail=(
@@ -334,7 +339,7 @@ async def _proxy_create_dir(
             ) from exc
         try:
             return await asyncio.wait_for(future, timeout=_CREATE_DIR_TIMEOUT_S)
-        except asyncio.TimeoutError as exc:
+        except TimeoutError as exc:
             raise HTTPException(
                 status_code=504,
                 detail=(
@@ -368,7 +373,8 @@ async def _proxy_install_harness(
     :param harness: The UI harness identifier to install, e.g. ``"claude"``.
     :returns: Dict with the result fields: ``status`` (``"ok"`` /
         ``"failed"``), ``configured_harnesses`` (the refreshed readiness map or
-        ``None``), ``gateway_inference`` (the refreshed per-harness
+        ``None``), ``version`` (the installed CLI version or ``None``),
+        ``gateway_inference`` (the refreshed per-harness
         AI-Gateway-backed inference map or ``None``), ``error`` (string or
         ``None``).
     :raises HTTPException: 504 on timeout, 502 on connection drop.
@@ -394,7 +400,7 @@ async def _proxy_install_harness(
             ) from exc
         try:
             return await asyncio.wait_for(future, timeout=_INSTALL_HARNESS_TIMEOUT_S)
-        except asyncio.TimeoutError as exc:
+        except TimeoutError as exc:
             raise HTTPException(
                 status_code=504,
                 detail=(
@@ -406,6 +412,41 @@ async def _proxy_install_harness(
         # Cleanup runs on every path so a cancelled caller doesn't
         # leave an orphan in the pending dict.
         host_conn.pending_installs.pop(request_id, None)
+
+
+async def _proxy_refresh_harnesses(
+    *,
+    host_registry: HostRegistry,
+    host_conn: HostConnection,
+) -> dict[str, Any]:
+    """Forward a forced harness-readiness probe and await its result."""
+    request_id = secrets.token_hex(8)
+    loop = asyncio.get_running_loop()
+    future: asyncio.Future[dict[str, Any]] = loop.create_future()
+    host_conn.pending_harness_refreshes[request_id] = future
+    try:
+        try:
+            host_registry.send_text(
+                host_conn,
+                encode_host_frame(HostRefreshHarnessesFrame(request_id=request_id)),
+            )
+        except ConnectionError as exc:
+            raise HTTPException(
+                status_code=502,
+                detail=f"host '{host_conn.host_id}' connection lost",
+            ) from exc
+        try:
+            return await asyncio.wait_for(future, timeout=_REFRESH_HARNESSES_TIMEOUT_S)
+        except TimeoutError as exc:
+            raise HTTPException(
+                status_code=504,
+                detail=(
+                    f"host '{host_conn.host_id}' did not respond to refresh_harnesses "
+                    f"within {_REFRESH_HARNESSES_TIMEOUT_S:.0f}s"
+                ),
+            ) from exc
+    finally:
+        host_conn.pending_harness_refreshes.pop(request_id, None)
 
 
 # The credential write is local keychain/file I/O on the host — fast, unlike the
@@ -448,7 +489,7 @@ async def _proxy_store_secret(
             ) from exc
         try:
             return await asyncio.wait_for(future, timeout=_STORE_SECRET_TIMEOUT_S)
-        except asyncio.TimeoutError as exc:
+        except TimeoutError as exc:
             raise HTTPException(
                 status_code=504,
                 detail=(
@@ -490,7 +531,7 @@ async def _proxy_detect_credentials(
             ) from exc
         try:
             return await asyncio.wait_for(future, timeout=_STORE_SECRET_TIMEOUT_S)
-        except asyncio.TimeoutError as exc:
+        except TimeoutError as exc:
             raise HTTPException(
                 status_code=504,
                 detail=(
@@ -679,9 +720,10 @@ def create_hosts_router(
 
         :param request: The incoming request (for auth).
         :returns: ``{"hosts": [...]}`` with host details — ``host_id``,
-            ``name``, ``owner``, ``status``, ``sandbox_provider``,
-            ``configured_harnesses``, and ``gateway_inference`` (``None`` when
-            no connected host has reported it to this replica).
+            ``name``, ``owner``, ``status``, ``created_at``, ``last_seen``,
+            ``sandbox_provider``, ``configured_harnesses``, and
+            ``gateway_inference`` (``None`` when no connected host has
+            reported it to this replica).
         """
         # require_user: unauthenticated callers 401. user_id is None
         # only when auth is disabled entirely — there the single-user
@@ -712,6 +754,10 @@ def create_hosts_router(
                     "name": host.name,
                     "owner": host.user_id,
                     "status": "online" if host_is_live(host, now=now) else "offline",
+                    # Epoch seconds. last_seen is the liveness timestamp (last
+                    # connect, heartbeat or disconnect), so stale rows stand out.
+                    "created_at": host.created_at,
+                    "last_seen": host.updated_at,
                     # Non-None marks a server-managed sandbox host (e.g.
                     # "modal"). Clients use it to hide sandbox-backed
                     # hosts from manual host pickers — they are launch
@@ -760,6 +806,8 @@ def create_hosts_router(
             "name": host.name,
             "owner": host.user_id,
             "status": "online" if host_is_live(host) else "offline",
+            "created_at": host.created_at,
+            "last_seen": host.updated_at,
             # Same semantics as list_hosts: non-None marks a
             # server-managed sandbox host (e.g. "modal").
             "sandbox_provider": host.sandbox_provider,
@@ -770,6 +818,52 @@ def create_hosts_router(
             "interactive_shells": host_registry.interactive_shells(host.host_id),
             "runners": [],
         }
+
+    @router.delete("/hosts/{host_id}")
+    async def delete_host(request: Request, host_id: str) -> dict[str, Any]:
+        """Delete an offline host registration.
+
+        Allowed for the host's owner and for administrators. Sessions bound
+        to the host are detached, not deleted. A machine that still holds
+        valid credentials registers again on its next connect.
+
+        :param request: The incoming request (for auth).
+        :param host_id: Host identifier, e.g. ``"host_a1b2c3d4..."``.
+        :returns: ``{"host_id": ..., "object": "host.deleted", "deleted": True}``.
+        :raises HTTPException: 401 when unauthenticated, 404 when the host
+            does not exist or belongs to another user, 409 when the host is
+            online or is a server-managed sandbox host.
+        """
+        user_id = require_user(request, auth_provider)
+        host = await asyncio.to_thread(host_store.get_host, host_id)
+        may_delete = host is not None and (
+            user_id is None
+            or host.user_id == user_id
+            or (
+                permission_store is not None
+                and await asyncio.to_thread(permission_store.is_admin, user_id)
+            )
+        )
+        if host is None or not may_delete:
+            # Report another user's host as absent rather than confirming it exists.
+            raise HTTPException(status_code=404, detail="host not found")
+        if host.sandbox_provider is not None:
+            raise HTTPException(
+                status_code=409,
+                detail="server-managed sandbox hosts are removed by the server",
+            )
+        add_audit_attrs(host_id=host_id)
+        try:
+            await asyncio.to_thread(host_store.delete_host, host_id, require_offline=True)
+        except OmnigentError as exc:
+            if exc.code != ErrorCode.CONFLICT:
+                raise
+            raise HTTPException(
+                status_code=409,
+                detail="host is online; stop it and retry once it shows offline",
+            ) from exc
+        announce_hosts_changed(host.user_id)
+        return {"host_id": host_id, "object": "host.deleted", "deleted": True}
 
     @router.get("/hosts/{host_id}/harnesses/{harness}/model-options")
     async def get_host_model_options(
@@ -865,6 +959,17 @@ def create_hosts_router(
             permission_store=permission_store,
         )
         conn = target.conn
+        if agent_store is not None and agent_cache is not None:
+            from omnigent.server.mcp_compatibility import require_session_registry_mcp_support
+
+            await asyncio.to_thread(
+                require_session_registry_mcp_support,
+                target.conv,
+                conn.hello.capabilities,
+                component="host",
+                agent_store=agent_store,
+                agent_cache=agent_cache,
+            )
         set_current_session_id(body.session_id)
         add_audit_attrs(session_id=body.session_id, host_id=host_id)
 
@@ -1125,6 +1230,8 @@ def create_hosts_router(
                     if target.conv.inference_snapshot
                     else None
                 ),
+                # The session had no runner bound, so nothing is superseded.
+                superseded_runner_ids=(),
             )
         )
         try:
@@ -1143,7 +1250,7 @@ def create_hosts_router(
                 future,
                 timeout=launch_timeout_s,
             )
-        except asyncio.TimeoutError:
+        except TimeoutError:
             conn.pending_launches.pop(request_id, None)
             await _rollback_failed_launch()
             raise HTTPException(
@@ -1444,6 +1551,53 @@ def create_hosts_router(
             "path": result.get("path"),
         }
 
+    @router.post("/hosts/{host_id}/harnesses/refresh")
+    async def refresh_host_harnesses(
+        request: Request,
+        host_id: str,
+    ) -> dict[str, Any]:
+        """Force an immediate full harness-readiness probe on a host."""
+        if not flags.enabled(Feature.HARNESS_INSTALL):
+            raise HTTPException(status_code=404, detail="not found")
+
+        user_id = require_user(request, auth_provider)
+        host = await asyncio.to_thread(host_store.get_host, host_id)
+        if host is None:
+            raise HTTPException(status_code=404, detail="host not found")
+        if user_id is not None and host.user_id != user_id:
+            raise HTTPException(status_code=403, detail="not your host")
+
+        conn = host_registry.get(host.host_id)
+        if conn is None:
+            raise _host_absent_error(host)
+        _require_harness_setup_support(conn, "refreshing harness readiness")
+        if CAP_REFRESH_HARNESSES not in conn.hello.capabilities:
+            raise OmnigentError(
+                (
+                    f"host '{conn.hello.name}' does not support immediate harness refresh; "
+                    "use the latest readiness reported by the host"
+                ),
+                code=ErrorCode.REFRESH_UNSUPPORTED,
+            )
+
+        result = await _proxy_refresh_harnesses(
+            host_registry=host_registry,
+            host_conn=conn,
+        )
+        if result.get("status") == "failed":
+            raise HTTPException(
+                status_code=502,
+                detail=f"host readiness refresh failed: {result.get('error') or 'unknown error'}",
+            )
+
+        refreshed_gateway = optional_str_bool_map(result, "gateway_inference")
+        if refreshed_gateway is not None:
+            host_registry.record_gateway_inference(host.host_id, refreshed_gateway)
+        return {
+            "configured_harnesses": result.get("configured_harnesses") or {},
+            "gateway_inference": refreshed_gateway,
+        }
+
     @router.post("/hosts/{host_id}/harnesses/{harness}/install")
     async def install_host_harness(
         request: Request,
@@ -1469,7 +1623,8 @@ def create_hosts_router(
         :param host_id: Host identifier, e.g. ``"host_a1b2c3d4..."``.
         :param harness: Harness identifier to install, e.g. ``"claude"``.
         :returns: ``{"object": "harness_install", "harness": ...,
-            "configured_harnesses": {...}, "gateway_inference": {...} | None}``
+            "configured_harnesses": {...}, "version": str | None,
+            "gateway_inference": {...} | None}``
             — the host's refreshed readiness map so the UI can flip the badge
             without a reconnect, plus its refreshed gateway-inference map
             (``None`` when the host didn't report one).
@@ -1555,6 +1710,7 @@ def create_hosts_router(
             "object": "harness_install",
             "harness": harness,
             "configured_harnesses": result.get("configured_harnesses") or {},
+            "version": result.get("version"),
             # Passed through as-is: ``None`` is "unknown", not "none backed".
             "gateway_inference": installed_gateway,
         }
