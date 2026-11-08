@@ -4118,7 +4118,7 @@ class HostProcess:
                     status="failed",
                     error=str(exc),
                 )
-            except Exception:  # noqa: BLE001 — no catalog, never a crash
+            except Exception:
                 _logger.warning("OpenCode model catalog unavailable", exc_info=True)
                 return HostModelOptionsResultFrame(
                     request_id=frame.request_id,
