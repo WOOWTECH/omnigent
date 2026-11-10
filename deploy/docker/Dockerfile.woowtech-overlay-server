@@ -7,6 +7,8 @@
 # 5. pip 的安全修補版（固定 wheel 雜湊），以及指定 Debian 安全更新。
 #    oauthlib：v0.21.0 的 image 已是 4.0.1（上游 Dockerfile 用 `uv pip install -e .`，不吃 uv.lock 的
 #    4.0.0），0.20 overlay 的重裝步驟拿掉，只在最後確認版本。
+# 6. routes/_gzip_route.py（略過 gzip 時完整保留 ASGI response start 與 body）。
+#    v0.21.0 的原檔與 v0.20.0 相同；image 裡是 Starlette 1.10.0，不修會讓檔案下載與 binary 預覽回 500。
 
 # ── Web UI builder：與上游 deploy/docker/Dockerfile 的 web-builder stage 相同做法 ──
 FROM --platform=$BUILDPLATFORM node:22-slim AS web-builder
@@ -35,6 +37,7 @@ RUN printf '%s\n' \
       '64a1ee122005bc65c99d4fd8271fe0426a338902eaed9bb70a3c5d10e2524f11  /build/omnigent/server/routes/_sessions/orchestration.py' \
       '535e8bd4bac35dc3555fc0b84e0e89fb2d70175229db4db37b9a12229eb4c99a  /build/omnigent/server/app.py' \
       '92b2e4a0d5ccaedff88e482586d313648584a0dcc35a2a7191007d53c7778d2d  /build/omnigent/server/routes/hosts.py' \
+      '6c38aa66c27d4cdbc3f4b6bc866823a51bc8a0b00b18c42c461f4b038be5942a  /build/omnigent/server/routes/_gzip_route.py' \
       '2372d5767c3a7895295178302f8993b5bb5fdda089c33116bc73b369aea4ac15  /build/omnigent/stores/host_store.py' \
     | sha256sum -c -
 RUN test -f /build/omnigent/server/static/web-ui/index.html
@@ -42,6 +45,7 @@ RUN test -f /build/omnigent/server/static/web-ui/index.html
 COPY omnigent/server/routes/_sessions/orchestration.py /build/omnigent/server/routes/_sessions/orchestration.py
 COPY omnigent/server/app.py /build/omnigent/server/app.py
 COPY omnigent/server/routes/hosts.py /build/omnigent/server/routes/hosts.py
+COPY omnigent/server/routes/_gzip_route.py /build/omnigent/server/routes/_gzip_route.py
 COPY omnigent/stores/host_store.py /build/omnigent/stores/host_store.py
 # 整份換掉，舊 bundle 的 hash 檔名不留在 image 裡。
 RUN rm -rf /build/omnigent/server/static/web-ui
@@ -64,11 +68,13 @@ assert Path('/build/omnigent/server/static/web-ui/index.html').is_file()
 
 import omnigent.server.app as app_module
 import omnigent.server.routes.hosts as hosts_module
+import omnigent.server.routes._gzip_route as gzip_route_module
 import omnigent.stores.host_store as host_store_module
 
 for overlay_module, overlay_path in (
     (app_module, '/build/omnigent/server/app.py'),
     (hosts_module, '/build/omnigent/server/routes/hosts.py'),
+    (gzip_route_module, '/build/omnigent/server/routes/_gzip_route.py'),
     (host_store_module, '/build/omnigent/stores/host_store.py'),
 ):
     assert Path(overlay_module.__file__).resolve() == Path(overlay_path), overlay_module.__file__
@@ -80,5 +86,6 @@ assert app_module._is_web_ui_history_fallback_path('grid/grid_abc123')
 assert 'OMNIGENT_PUBLIC_HSTS' in inspect.getsource(app_module.create_app)
 assert '@router.delete("/hosts/{host_id}")' in inspect.getsource(hosts_module.create_hosts_router)
 assert 'require_offline' in inspect.signature(host_store_module.HostStore.delete_host).parameters
+assert '_skip_compression' in inspect.getsource(gzip_route_module._StateAwareGZipResponder.send_with_compression)
 print('WOOWTECH v0.21.0 server overlay imported: PASS')
 PY

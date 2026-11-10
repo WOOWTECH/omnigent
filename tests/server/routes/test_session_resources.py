@@ -4341,9 +4341,23 @@ _DOWNLOAD_URL = (
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("filename", "payload"),
+    [
+        pytest.param("big.bin", bytes(range(256)) * 64, id="binary"),
+        pytest.param("archive.zip", b"PK" + bytes(range(256)) * 64, id="zip"),
+        pytest.param("empty.txt", b"", id="empty"),
+        pytest.param("CONTRACT.txt", "UTF-8 contract: 中文 café\n".encode(), id="text"),
+        pytest.param(
+            "報告 résumé.txt", "Unicode filename and content: 日本語\n".encode(), id="unicode"
+        ),
+    ],
+)
 async def test_filesystem_download_streams_runner_attachment(
     client: httpx.AsyncClient,
     tmp_path: Path,
+    filename: str,
+    payload: bytes,
 ) -> None:
     """``?download=true`` forwards the runner's attachment and headers verbatim.
 
@@ -4351,8 +4365,7 @@ async def test_filesystem_download_streams_runner_attachment(
     this also pins that the owner's workspace-relative download carries the
     ``scope=reach`` mark the runner needs to follow an outward symlink.
     """
-    payload = bytes(range(256)) * 64
-    (tmp_path / "big.bin").write_bytes(payload)
+    (tmp_path / filename).write_bytes(payload)
     runner = FastAPI()
     seen: list[tuple[str, bool, str | None]] = []
 
@@ -4367,20 +4380,31 @@ async def test_filesystem_download_streams_runner_attachment(
         del session_id, environment_id
         seen.append((relative_path, download, scope))
         return FileResponse(
-            tmp_path / "big.bin",
-            filename="big.bin",
+            tmp_path / filename,
+            filename=filename,
             headers={"Cache-Control": "no-store"},
         )
 
     async with _runner_app_client(runner):
-        resp = await client.get(_DOWNLOAD_URL)
+        resp = await client.get(
+            f"{_FS_BASE}/filesystem/data/{quote(filename)}?download=true",
+            headers={"Accept-Encoding": "gzip"},
+        )
 
     assert resp.status_code == 200
     assert resp.content == payload
-    assert resp.headers["content-disposition"] == 'attachment; filename="big.bin"'
+    assert "content-encoding" not in resp.headers
+
+    quoted = quote(filename)
+    expected_disposition = (
+        f'attachment; filename="{filename}"'
+        if quoted == filename
+        else f"attachment; filename*=utf-8''{quoted}"
+    )
+    assert resp.headers["content-disposition"] == expected_disposition
     assert resp.headers["content-length"] == str(len(payload))
     assert resp.headers["cache-control"] == "no-store"
-    assert seen == [("data/big.bin", True, "reach")]
+    assert seen == [(f"data/{filename}", True, "reach")]
 
 
 @pytest.mark.asyncio
@@ -10152,7 +10176,13 @@ async def test_file_read_is_gzipped(client: httpx.AsyncClient) -> None:
 
 
 @pytest.mark.asyncio
-async def test_binary_file_read_is_not_gzipped(client: httpx.AsyncClient) -> None:
+@pytest.mark.parametrize(
+    ("path", "content_type"),
+    [("docs/logo.png", "image/png"), ("downloads/all-projects.zip", "application/zip")],
+)
+async def test_binary_file_read_is_not_gzipped(
+    client: httpx.AsyncClient, path: str, content_type: str
+) -> None:
     """A base64 (binary) read skips compression.
 
     Base64 of already-compressed media only carries base64's own redundancy, so
@@ -10165,10 +10195,11 @@ async def test_binary_file_read_is_not_gzipped(client: httpx.AsyncClient) -> Non
     :returns: None.
     """
     payload = _fs_binary_read_payload()
+    payload.update(path=path, content_type=content_type)
     set_runner_router(_FakeRunnerRouter(_FakeRunnerClient(payload=payload)))  # type: ignore[arg-type]
 
     resp = await client.get(
-        f"{_FS_BASE}/filesystem/docs/logo.png",
+        f"{_FS_BASE}/filesystem/{path}",
         headers={"Accept-Encoding": "gzip"},
     )
 

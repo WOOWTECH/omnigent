@@ -97,11 +97,9 @@ class _StateAwareGZipResponder(GZipResponder):
     Gzip responder that honours a handler's :func:`skip_gzip` opt-out.
 
     The flag can only be read at send time: the handler sets it while running,
-    which is after ``handle`` dispatches but before the response body is
-    emitted. Reuses Starlette's own ``content_type_is_excluded`` opt-out — the
-    flag it already sets for ``text/event-stream`` — so an excluded response
-    takes the library's untouched pass-through path rather than a parallel one
-    here.
+    which is after ``handle`` dispatches but before the response starts.
+    Bypass compression from the start message onward, so every ASGI message
+    is forwarded untouched without relying on Starlette's header buffering.
 
     :param app: The wrapped ASGI app (the route's own ``handle``).
     :param minimum_size: Minimum body size to compress, e.g. ``1024``.
@@ -120,23 +118,21 @@ class _StateAwareGZipResponder(GZipResponder):
     ) -> None:
         super().__init__(app, minimum_size, compresslevel=compresslevel)
         self._state = state
+        self._skip_compression = False
 
     async def send_with_compression(self, message: Message) -> None:
         """
-        Widen Starlette's exclusion set when the handler opted out.
+        Forward the entire response unchanged when the handler opted out.
 
         :param message: The outgoing ASGI message.
         :returns: None.
         """
-        if (
-            message["type"] == "http.response.body"
-            and not self.started
-            and self._state.get(SKIP_GZIP_STATE_KEY)
-        ):
-            # Starlette reads this flag on the first body message, then emits
-            # the start message it buffered — untouched.
-            self.content_type_is_excluded = True
-        await super().send_with_compression(message)
+        if message["type"] == "http.response.start":
+            self._skip_compression = bool(self._state.get(SKIP_GZIP_STATE_KEY))
+        if self._skip_compression:
+            await self.send(message)
+        else:
+            await super().send_with_compression(message)
 
 
 class GZipFileContentRoute(APIRoute):

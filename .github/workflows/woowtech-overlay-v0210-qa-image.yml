@@ -1,20 +1,56 @@
-name: WOOWTECH v0.21.0 overlay QA images
+name: WOOWTECH v0.21.0 overlay images
 
-# WOOWTECH fork 專用：push 到這條分支時，build 並推送 server／host 兩個 overlay QA image。
-# 每條 overlay 分支只推自己的 QA tag；舊 tag（例如 0.20.0-overlay-qa-20261108-security5＝chart 0.1.17
-# 的來源 digest）不可覆寫。同一個 tag 每次 push 都會被蓋掉：測過的 digest 要保留時，先改 tag 後綴再 push。
+# WOOWTECH fork 專用：build server／host 兩個 v0.21.0 overlay image，作法沿用 PR #4 的 v0200 workflow。
+# - PR（目標 main）：兩個 image 都 build，不推送，只當檢查。
+# - push 到 main、release/woowtech-overlay/**、或 0.21 overlay 分支：推送不會重複的候選 tag
+#   <image>:0.21.0-overlay-sha-<commit>-run-<run id>-<attempt>，並把 image@digest 寫進 receipt
+#   （job summary ＋ artifact）。鏡像、chart pin 與部署一律用 receipt 裡的 digest，另走核可流程。
+# - 不再推送固定 tag：舊的固定 tag（例如 0.20.0-overlay-qa-20261108-security5＝chart 0.1.17 的來源）
+#   不會被這個 workflow 覆寫。
 on:
+  pull_request:
+    branches: [main]
+    paths:
+      - .github/workflows/woowtech-overlay-v0210-qa-image.yml
+      - deploy/docker/Dockerfile.woowtech-overlay-*
+      - deploy/docker/woowtech-*
+      - omnigent/**
+      - web/**
+      - patches/**
+      - pnpm-lock.yaml
+      - pnpm-workspace.yaml
   push:
     branches:
+      - main
+      - release/woowtech-overlay/**
       - fix/omnigent-v0210-overlay-20261110
+    paths:
+      - .github/workflows/woowtech-overlay-v0210-qa-image.yml
+      - deploy/docker/Dockerfile.woowtech-overlay-*
+      - deploy/docker/woowtech-*
+      - omnigent/**
+      - web/**
+      - patches/**
+      - pnpm-lock.yaml
+      - pnpm-workspace.yaml
+  workflow_dispatch:
 
 permissions:
   contents: read
   packages: write
 
+env:
+  # 與兩個 overlay Dockerfile 的 FROM 版本一致；不一致時 job 直接失敗，避免 tag 標錯版本。
+  OVERLAY_BASE_VERSION: 0.21.0
+
+concurrency:
+  group: woowtech-overlay-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: false
+
 jobs:
   build:
     if: github.repository == 'WOOWTECH/omnigent'
+    # v0.21.0 的 custom-lint 不接受 ubuntu-latest；host image 要重建 gh、下載 OpenCode，時間放寬到 45 分鐘。
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     strategy:
@@ -22,25 +58,76 @@ jobs:
       matrix:
         include:
           - component: server
-            image: ghcr.io/woowtech/omnigent-server-kubernetes:0.21.0-overlay-qa-20261110-1
+            image: ghcr.io/woowtech/omnigent-server-kubernetes
           - component: host
-            image: ghcr.io/woowtech/omnigent-host:0.21.0-overlay-qa-20261110-1
+            image: ghcr.io/woowtech/omnigent-host
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
       - uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5
-      - uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee
+      - name: Derive unique candidate tag
+        id: candidate
+        env:
+          COMPONENT: ${{ matrix.component }}
+          IMAGE: ${{ matrix.image }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          grep -Fq ":v${OVERLAY_BASE_VERSION}@sha256:" "deploy/docker/Dockerfile.woowtech-overlay-${COMPONENT}"
+          echo "tag=${IMAGE}:${OVERLAY_BASE_VERSION}-overlay-sha-${GITHUB_SHA}-run-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_OUTPUT"
+      - name: Log in to GHCR
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf
+      - name: Build overlay
+        id: build
+        uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf
         with:
           context: .
           file: deploy/docker/Dockerfile.woowtech-overlay-${{ matrix.component }}
           platforms: linux/amd64
-          push: true
+          push: ${{ github.event_name != 'pull_request' }}
           provenance: false
-          tags: ${{ matrix.image }}
+          tags: ${{ steps.candidate.outputs.tag }}
           labels: |
             org.opencontainers.image.source=https://github.com/WOOWTECH/omnigent
             org.opencontainers.image.revision=${{ github.sha }}
+      - name: Record immutable image reference
+        if: github.event_name != 'pull_request'
+        env:
+          COMPONENT: ${{ matrix.component }}
+          IMAGE: ${{ matrix.image }}
+          IMAGE_TAG: ${{ steps.candidate.outputs.tag }}
+          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import re
+          from pathlib import Path
+
+          digest = os.environ['IMAGE_DIGEST']
+          assert re.fullmatch(r'sha256:[0-9a-f]{64}', digest), 'Missing image digest'
+          receipt = {
+              'component': os.environ['COMPONENT'],
+              'sourceCommit': os.environ['GITHUB_SHA'],
+              'runId': os.environ['GITHUB_RUN_ID'],
+              'runAttempt': os.environ['GITHUB_RUN_ATTEMPT'],
+              'tag': os.environ['IMAGE_TAG'],
+              'image': os.environ['IMAGE'] + '@' + digest,
+          }
+          Path('overlay-image.json').write_text(json.dumps(receipt, indent=2) + '\n')
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as summary:
+              summary.write('```json\n' + json.dumps(receipt, indent=2) + '\n```\n')
+          PY
+      - name: Upload image receipt
+        if: github.event_name != 'pull_request'
+        # 比照上游其他 workflow 釘 commit SHA；security-scan 的 lint 會把 @v4 這種浮動 ref 判成 HIGH。
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: overlay-${{ matrix.component }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: overlay-image.json
+          if-no-files-found: error
+          retention-days: 30
