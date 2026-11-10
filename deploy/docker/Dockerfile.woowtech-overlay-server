@@ -1,10 +1,12 @@
-# WOOWTECH fork 專用：以上游 v0.20.0 server image 為底，換掉：
+# WOOWTECH fork 專用：以上游 v0.21.0 server image 為底，換掉：
 # 1. MCP 回應的 orchestration.py（保留 tool 失敗的 isError 標記）；
 # 2. Web UI bundle（新對話可替 OpenCode 先選模型）；
 # 3. server/app.py（/docs、/redoc、/openapi.json 預設不公開，OMNIGENT_PUBLIC_API_DOCS=1 才開；
 #    SPA fallback 只接網頁路由；OMNIGENT_PUBLIC_HSTS=1 時所有回應帶 HSTS）；
 # 4. routes/hosts.py、stores/host_store.py（DELETE /v1/hosts/{id}；主機清單與詳情帶 created_at、last_seen）。
-# 5. oauthlib 與 pip 的安全修補版（固定 wheel 雜湊），以及指定 Debian 安全更新。
+# 5. pip 的安全修補版（固定 wheel 雜湊），以及指定 Debian 安全更新。
+#    oauthlib：v0.21.0 的 image 已是 4.0.1（上游 Dockerfile 用 `uv pip install -e .`，不吃 uv.lock 的
+#    4.0.0），0.20 overlay 的重裝步驟拿掉，只在最後確認版本。
 
 # ── Web UI builder：與上游 deploy/docker/Dockerfile 的 web-builder stage 相同做法 ──
 FROM --platform=$BUILDPLATFORM node:22-slim AS web-builder
@@ -22,23 +24,17 @@ RUN pnpm --filter web run build
 RUN grep -lE 'displayName:.OpenCode.,iconKind:.opencode.,sortRank:25,capabilities:\[.modelPicker.\]' \
       /web/omnigent/server/static/web-ui/assets/*.js
 
-FROM ghcr.io/omnigent-ai/omnigent-server-kubernetes:v0.20.0@sha256:5087a4e9522dda25ae4ae58681865b8c0b45cfb5cf5b02737e3de32a08accb6b
+FROM ghcr.io/omnigent-ai/omnigent-server-kubernetes:v0.21.0@sha256:d83a3dce03e2cd2e3e1a8cdf8b20d9696838dcbfbc6ceee3cabe5fbc0c23b657
 
 # Apply the shared OS and Python installer security fixes.
 COPY deploy/docker/woowtech-runtime-security.sh deploy/docker/woowtech-pip-security.txt /build/
 RUN sh /build/woowtech-runtime-security.sh
 
-# Patch the inherited OAuth dependency without changing unrelated packages.
-COPY deploy/docker/woowtech-server-security.txt /build/woowtech-server-security.txt
-RUN /usr/local/bin/python -m pip --python /opt/venv/bin/python install \
-      --no-cache-dir --no-deps --only-binary=:all: --require-hashes \
-      -r /build/woowtech-server-security.txt
-
-# 換檔前先確認 image 內的原檔就是 git tag v0.20.0 的版本，overlay 才只帶這次的 diff。
-RUN echo '28008d3d658f4d925a47818af2a50148745bdd6d8a0710345c76ac65fac046fd  /build/omnigent/server/routes/_sessions/orchestration.py' | sha256sum -c -
+# 換檔前先確認 image 內的原檔就是 git tag v0.21.0 的版本，overlay 才只帶這次的 diff。
 RUN printf '%s\n' \
-      '6b0292df57e9b5a01671aa7d2ad168ba531c95daa0512b3c6a0bd022c873360e  /build/omnigent/server/app.py' \
-      '1280d24a3ded9057a53f195bf2b22d0fd0aa7119f05b4e4e6f4db0737db10b3d  /build/omnigent/server/routes/hosts.py' \
+      '64a1ee122005bc65c99d4fd8271fe0426a338902eaed9bb70a3c5d10e2524f11  /build/omnigent/server/routes/_sessions/orchestration.py' \
+      '535e8bd4bac35dc3555fc0b84e0e89fb2d70175229db4db37b9a12229eb4c99a  /build/omnigent/server/app.py' \
+      '92b2e4a0d5ccaedff88e482586d313648584a0dcc35a2a7191007d53c7778d2d  /build/omnigent/server/routes/hosts.py' \
       '2372d5767c3a7895295178302f8993b5bb5fdda089c33116bc73b369aea4ac15  /build/omnigent/stores/host_store.py' \
     | sha256sum -c -
 RUN test -f /build/omnigent/server/static/web-ui/index.html
@@ -57,8 +53,9 @@ import inspect
 import importlib.metadata
 import omnigent.server.routes._sessions.orchestration as module
 
-assert importlib.metadata.version('omnigent') == '0.20.0', importlib.metadata.version('omnigent')
-assert importlib.metadata.version('oauthlib') == '4.0.1'
+assert importlib.metadata.version('omnigent') == '0.21.0', importlib.metadata.version('omnigent')
+assert importlib.metadata.version('oauthlib') == '4.0.1', importlib.metadata.version('oauthlib')
+assert importlib.metadata.version('pip') == '26.3', importlib.metadata.version('pip')
 assert Path(module.__file__).resolve() == Path('/build/omnigent/server/routes/_sessions/orchestration.py')
 source = inspect.getsource(module._handle_mcp_tools_call)
 assert 'result["isError"] = True' in source
@@ -83,5 +80,5 @@ assert app_module._is_web_ui_history_fallback_path('grid/grid_abc123')
 assert 'OMNIGENT_PUBLIC_HSTS' in inspect.getsource(app_module.create_app)
 assert '@router.delete("/hosts/{host_id}")' in inspect.getsource(hosts_module.create_hosts_router)
 assert 'require_offline' in inspect.signature(host_store_module.HostStore.delete_host).parameters
-print('WOOWTECH v0.20.0 server overlay imported: PASS')
+print('WOOWTECH v0.21.0 server overlay imported: PASS')
 PY

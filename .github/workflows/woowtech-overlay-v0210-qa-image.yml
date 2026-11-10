@@ -1,11 +1,12 @@
-name: WOOWTECH v0.20.0 overlay QA images
+name: WOOWTECH v0.21.0 overlay QA images
 
 # WOOWTECH fork 專用：push 到這條分支時，build 並推送 server／host 兩個 overlay QA image。
-# 每條 overlay 分支只推自己的 QA tag；舊 tag（例如 20261028＝chart 0.1.15 的來源 digest）不可覆寫。
+# 每條 overlay 分支只推自己的 QA tag；舊 tag（例如 0.20.0-overlay-qa-20261108-security5＝chart 0.1.17
+# 的來源 digest）不可覆寫。同一個 tag 每次 push 都會被蓋掉：測過的 digest 要保留時，先改 tag 後綴再 push。
 on:
   push:
     branches:
-      - fix/omnigent-v0200-overlay-20261107
+      - fix/omnigent-v0210-overlay-20261110
 
 permissions:
   contents: read
@@ -14,16 +15,16 @@ permissions:
 jobs:
   build:
     if: github.repository == 'WOOWTECH/omnigent'
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
         include:
           - component: server
-            image: ghcr.io/woowtech/omnigent-server-kubernetes:0.20.0-overlay-qa-20261108-ci-validation1
+            image: ghcr.io/woowtech/omnigent-server-kubernetes:0.21.0-overlay-qa-20261110-1
           - component: host
-            image: ghcr.io/woowtech/omnigent-host:0.20.0-overlay-qa-20261108-ci-validation1
+            image: ghcr.io/woowtech/omnigent-host:0.21.0-overlay-qa-20261110-1
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
       - uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5

@@ -1,8 +1,10 @@
-# WOOWTECH fork 專用：以上游 v0.20.0 host image 為底，換掉：
+# WOOWTECH fork 專用：以上游 v0.21.0 host image 為底，換掉：
 # 1. runner MCP 的三個檔案（tool 清單與本機 dispatch 的授權一致、未知 tool 回 protocol error）；
-# 2. host/connect.py（新對話的 OpenCode 模型清單）。
-# 3. 共用的 Debian 與 Python installer 安全修補。
-FROM ghcr.io/omnigent-ai/omnigent-host:v0.20.0@sha256:3f6009a0f73d73b838d6c05db984e345e6bcabd01f1c7a055cfad119fdf1c8fb
+# 2. host/connect.py 與 harnesses/opencode_native/app_server.py（新對話的 OpenCode 模型清單，
+#    OpenCode 2.x 用 `opencode models --standalone`）；
+# 3. 共用的 Debian 與 Python installer 安全修補、npm 與 gh 的安全修補；
+# 4. 預裝 OpenCode 2.0.32（受管 session 不能在啟動時補裝 CLI）。
+FROM ghcr.io/omnigent-ai/omnigent-host:v0.21.0@sha256:da9265d28a920d876c89d464b599d4bdcf4647bc338e3c4f79e3e2714570c7e5
 
 # Apply the shared OS and Python installer security fixes.
 COPY deploy/docker/woowtech-runtime-security.sh deploy/docker/woowtech-pip-security.txt /build/
@@ -13,36 +15,58 @@ RUN sh /build/woowtech-host-security.sh
 # Managed sessions cannot install a missing CLI at launch time.
 COPY deploy/docker/woowtech-opencode-install.sh /build/
 RUN sh /build/woowtech-opencode-install.sh
+# 版本由 image 固定：不讓 OpenCode 自己檢查／下載更新（2.1+ 會被 harness 的版本範圍擋下）。
+ENV OPENCODE_DISABLE_AUTOUPDATE=1
 
-# 換檔前先確認 image 內的原檔就是 git tag v0.20.0 的版本，overlay 才只帶這次的 diff。
+# 換檔前先確認 image 內的原檔就是 git tag v0.21.0 的版本，overlay 才只帶這次的 diff。
 RUN cd /opt/venv/lib/python3.12/site-packages/omnigent/runner && printf '%s\n' \
-      'fa41ddffb926969dba611bd4901e5e01e0977da555949b003e5ced6392b182f8  mcp_routes.py' \
-      '0205961b30244aff8092303b01c762e4d84ba2374764751653f7015bde919ae7  proxy_mcp_manager.py' \
-      'b9ad1b4b9d67cb56342a1c8027d6e4db61a600897442664a96cba10c61f5faea  tool_dispatch.py' \
+      'a3ca5bffff2d73c882c984a631f0f228c178b1b0d6851341378c133fb8ea03d5  mcp_routes.py' \
+      'a0485c2490935789b398deb80445af5dd18a2174207a88607967b2b42bbc5976  proxy_mcp_manager.py' \
+      'd3cab4b6c969ed0e3d60996ad97effdfaaae716a282293a1e7ebf65c41f44b8e  tool_dispatch.py' \
     | sha256sum -c -
-RUN echo '36666ca6197f1bf6f372aa4cceb967312fa76018a87e51c8f1180a1cc9903561  /opt/venv/lib/python3.12/site-packages/omnigent/host/connect.py' | sha256sum -c -
+RUN cd /opt/venv/lib/python3.12/site-packages/omnigent && printf '%s\n' \
+      '264f2287cc462309201a7cd2fe255ee227e05a7a0e1e08b75995e90900c848d6  host/connect.py' \
+      '368aaa1ac00b3eb49bc8bdeb9aa3a20c6207abc11ac72ae43d3026689ea95d55  harnesses/opencode_native/app_server.py' \
+    | sha256sum -c -
 
 COPY omnigent/runner/mcp_routes.py omnigent/runner/proxy_mcp_manager.py omnigent/runner/tool_dispatch.py /opt/venv/lib/python3.12/site-packages/omnigent/runner/
 COPY omnigent/runner/mcp_routes.py omnigent/runner/proxy_mcp_manager.py omnigent/runner/tool_dispatch.py /build/omnigent/runner/
 COPY omnigent/host/connect.py /opt/venv/lib/python3.12/site-packages/omnigent/host/connect.py
 COPY omnigent/host/connect.py /build/omnigent/host/connect.py
+COPY omnigent/harnesses/opencode_native/app_server.py /opt/venv/lib/python3.12/site-packages/omnigent/harnesses/opencode_native/app_server.py
+COPY omnigent/harnesses/opencode_native/app_server.py /build/omnigent/harnesses/opencode_native/app_server.py
 
 RUN /opt/venv/bin/python - <<'PY'
 import importlib
-from pathlib import Path
 import importlib.metadata
-
-assert importlib.metadata.version('omnigent') == '0.20.0', importlib.metadata.version('omnigent')
-for name in ('mcp_routes', 'proxy_mcp_manager', 'tool_dispatch'):
-    module = importlib.import_module(f'omnigent.runner.{name}')
-    installed = Path(module.__file__).resolve()
-    assert installed == Path(f'/opt/venv/lib/python3.12/site-packages/omnigent/runner/{name}.py')
-    assert installed.read_bytes() == Path(f'/build/omnigent/runner/{name}.py').read_bytes()
-from omnigent.runner.tool_dispatch import build_mcp_local_tool_schemas, is_known_mcp_local_tool  # noqa: F401
 import inspect
+import os
+import tempfile
+from pathlib import Path
+
+site = Path('/opt/venv/lib/python3.12/site-packages/omnigent')
+assert importlib.metadata.version('omnigent') == '0.21.0', importlib.metadata.version('omnigent')
+for name in ('runner.mcp_routes', 'runner.proxy_mcp_manager', 'runner.tool_dispatch', 'host.connect',
+             'harnesses.opencode_native.app_server'):
+    module = importlib.import_module(f'omnigent.{name}')
+    rel = name.replace('.', '/') + '.py'
+    installed = Path(module.__file__).resolve()
+    assert installed == site / rel, installed
+    assert installed.read_bytes() == Path(f'/build/omnigent/{rel}').read_bytes(), rel
+from omnigent.runner.tool_dispatch import build_mcp_local_tool_schemas, is_known_mcp_local_tool  # noqa: F401
 connect = importlib.import_module('omnigent.host.connect')
-assert Path(connect.__file__).resolve() == Path('/opt/venv/lib/python3.12/site-packages/omnigent/host/connect.py')
-assert Path(connect.__file__).read_bytes() == Path('/build/omnigent/host/connect.py').read_bytes()
 assert 'harness == "opencode-native"' in inspect.getsource(connect.HostProcess._handle_model_options)
-print('WOOWTECH v0.20.0 host overlay imports from installed package: PASS')
+
+# 用 harness 自己的版本檢查確認預裝的 OpenCode 會被 0.21 接受。
+from omnigent.harnesses.opencode_native import app_server
+
+assert '"--standalone"' in inspect.getsource(app_server.list_opencode_cli_model_options)
+with tempfile.TemporaryDirectory() as home:
+    for key in ('HOME', 'XDG_DATA_HOME', 'XDG_CONFIG_HOME', 'XDG_STATE_HOME', 'XDG_CACHE_HOME'):
+        os.environ[key] = home
+    cli = app_server.find_opencode_cli()
+    version = app_server.resolve_opencode_version(cli)
+    assert version == '2.0.32', version
+    app_server.check_opencode_version(version)
+print('WOOWTECH v0.21.0 host overlay imports from installed package: PASS')
 PY
