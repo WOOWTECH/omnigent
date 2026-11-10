@@ -35,6 +35,7 @@ import shutil
 import socket
 import subprocess
 import threading
+import time
 from collections import deque
 from collections.abc import Mapping, Sequence
 from pathlib import Path
@@ -218,6 +219,105 @@ def resolve_opencode_version(opencode_path: str) -> str:
     if version is None:
         raise OpenCodeVersionError(f"Could not parse OpenCode version from: {output!r}")
     return version
+
+
+# WOOWTECH overlay：New Chat 的 OpenCode 模型清單（host 端預覽）。
+_ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
+# picker 選到 OpenCode 時每 15 秒輪詢一次；`--standalone` 每次都要起一個私有 server，
+# 所以成功的結果在 host 上快取一段時間，並且同一時間只跑一個。
+OPENCODE_CLI_MODEL_OPTIONS_TTL_S = 60.0
+_cli_model_options_lock = threading.Lock()
+_cli_model_options_cache: dict[str, tuple[float, list[dict[str, object]]]] = {}
+
+
+def _parse_opencode_cli_models(stdout: str) -> list[dict[str, object]]:
+    """
+    Parse ``opencode models`` output into model-picker options.
+
+    OpenCode 2.x prints one sorted ``provider/model`` id per line. The shape
+    matches the runner's in-session catalog rows (see
+    ``omnigent.runner.native.orchestration._opencode_model_options_from_catalog``).
+
+    :param stdout: Raw CLI stdout, e.g. ``"openai/gpt-5\\nopenrouter/x/y\\n"``.
+    :returns: Options keyed by the qualified ``provider/model`` id.
+    """
+    options: list[dict[str, object]] = []
+    seen: set[str] = set()
+    for raw_line in stdout.splitlines():
+        line = _ANSI_RE.sub("", raw_line).strip()
+        if not line or "/" not in line or any(ch.isspace() for ch in line):
+            continue
+        provider_id, model_id = line.split("/", 1)
+        if not provider_id or not model_id or line in seen:
+            continue
+        seen.add(line)
+        options.append(
+            {
+                "id": line,
+                "model": model_id,
+                "providerID": provider_id,
+                "displayName": line,
+                "name": model_id,
+                "isDefault": False,
+            }
+        )
+    return options
+
+
+def list_opencode_cli_model_options(
+    *,
+    opencode_path: str | None = None,
+    timeout: float = 60.0,
+    max_age: float = OPENCODE_CLI_MODEL_OPTIONS_TTL_S,
+    now: float | None = None,
+) -> list[dict[str, object]]:
+    """
+    List the host's OpenCode models with ``opencode models --standalone``.
+
+    Used by the host's New Chat model preview, before a session (and its
+    runner-owned ``opencode serve``) exists. OpenCode 2.x's ``models`` command
+    connects to the background service by default and starts one when none is
+    running; ``--standalone`` instead runs a private server tied to this
+    command (``serve --stdio``), so no long-lived process is left behind.
+
+    :param opencode_path: Explicit executable path; ``None`` searches ``PATH``.
+    :param timeout: Maximum command duration in seconds.
+    :param max_age: Seconds a successful result is reused; ``0`` disables reuse.
+    :param now: Monotonic clock override for tests.
+    :returns: Model option dicts with full ``provider/model`` ids.
+    :raises OpenCodeCliNotFoundError: When no ``opencode`` binary is found.
+    :raises OpenCodeVersionError: When the CLI is outside the supported 2.0.x range.
+    :raises RuntimeError: When the command fails.
+    """
+    cli = find_opencode_cli(opencode_path)
+    with _cli_model_options_lock:
+        clock = time.monotonic() if now is None else now
+        cached = _cli_model_options_cache.get(cli)
+        if cached is not None and max_age > 0 and clock - cached[0] < max_age:
+            return [dict(option) for option in cached[1]]
+        version = resolve_opencode_version(cli)
+        if not os.environ.get(_SKIP_VERSION_CHECK_ENV):
+            # 1.x 沒有 --standalone，也不在 0.21 harness 支援的版本範圍內。
+            check_opencode_version(version)
+        try:
+            completed = subprocess.run(
+                [cli, "models", "--standalone"],
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                check=False,
+                stdin=subprocess.DEVNULL,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise RuntimeError(f"Could not run 'opencode models': {exc}") from exc
+        if completed.returncode != 0:
+            raise RuntimeError(
+                f"'opencode models' failed with code {completed.returncode}: "
+                f"{completed.stderr[:500]}"
+            )
+        options = _parse_opencode_cli_models(completed.stdout)
+        _cli_model_options_cache[cli] = (clock, options)
+        return [dict(option) for option in options]
 
 
 def allocate_loopback_port() -> int:

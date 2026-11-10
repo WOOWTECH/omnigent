@@ -5861,7 +5861,7 @@ describe("NewChatLandingScreen", () => {
     } as Response);
     renderLanding();
     openAgentModels("a_opencode");
-    expect(screen.getByTestId("new-chat-landing-agent-model-search")).toBeVisible();
+    // 0.21 起模型搜尋框由上游的分組選單統一處理（10 個以上才出現），這裡只有 2 個。
     expect(screen.queryByTestId("new-chat-landing-agent-efforts")).toBeNull();
     pickPrimaryOption("model", "openai/gpt-5");
     closeMenu();

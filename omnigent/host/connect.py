@@ -4101,18 +4101,18 @@ class HostProcess:
             )
 
         if harness == "opencode-native":
-            # 用 host 上 opencode CLI 的 `opencode models` 預覽模型清單；不加
-            # --refresh，避免 picker 每 15 秒輪詢都打外部網路。
+            # 用 host 上 OpenCode 2.x 的 `opencode models --standalone` 預覽模型清單：
+            # 不連、也不拉起常駐的 background service；結果在 host 上快取 60 秒，
+            # picker 每 15 秒的輪詢不會每次都重開 server。
             from omnigent.harnesses.opencode_native.app_server import (
                 OpenCodeCliNotFoundError,
+                OpenCodeVersionError,
                 list_opencode_cli_model_options,
             )
 
             try:
-                opencode_models = await asyncio.to_thread(
-                    list_opencode_cli_model_options, refresh=False
-                )
-            except OpenCodeCliNotFoundError as exc:
+                opencode_models = await asyncio.to_thread(list_opencode_cli_model_options)
+            except (OpenCodeCliNotFoundError, OpenCodeVersionError) as exc:
                 return HostModelOptionsResultFrame(
                     request_id=frame.request_id,
                     status="failed",
