@@ -1,2 +1,0 @@
-# OAuth device-code validation security fix; keep the base image dependency set.
-oauthlib==4.0.1 --hash=sha256:498a298876e996301950a5b053d12c31628bb7b895db03666430c69ce182eb61

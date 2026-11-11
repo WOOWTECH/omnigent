@@ -27,7 +27,14 @@ from omnigent.runner.mcp_manager import McpSchemasResult
 from omnigent.runner.native.orchestration import ResolvedSpec
 from omnigent.runner.resource_registry import SessionResourceRegistry
 from omnigent.runtime.harnesses.process_manager import NoLiveHarnessError
-from omnigent.spec.types import AgentSpec, ApiKeyAuth, DatabricksAuth, ExecutorSpec, ProviderAuth
+from omnigent.spec.types import (
+    AgentSpec,
+    ApiKeyAuth,
+    DatabricksAuth,
+    ExecutorSpec,
+    MCPServerConfig,
+    ProviderAuth,
+)
 from omnigent.tools.mcp import McpElicitationRequired
 
 pytestmark = pytest.mark.asyncio
@@ -215,10 +222,30 @@ async def test_unknown_method_is_method_not_found() -> None:
 # ── tools/list ─────────────────────────────────────────────────────────────
 
 
-async def test_tools_list_without_a_manager_is_503() -> None:
-    status, body = await Harness(mcp_manager=None).execute({"method": "tools/list"})
+async def test_tools_list_without_a_manager_is_503_when_the_spec_needs_one() -> None:
+    # WOOWTECH overlay：只有 spec 宣告了外部 MCP server 才需要 manager。
+    h = Harness(mcp_manager=None)
+    h.spec_cache[SESSION] = AgentSpec(
+        spec_version=1,
+        name="t",
+        executor=ExecutorSpec(),
+        mcp_servers=[MCPServerConfig(name="jira", transport="registry")],
+    )
+    status, body = await h.execute({"method": "tools/list"})
     assert status == 503
     assert body["error"]["message"] == "Runner MCP manager not configured"
+
+
+async def test_tools_list_without_a_manager_lists_local_tools() -> None:
+    # WOOWTECH overlay：沒有外部 MCP server 的 agent 也要列出可以呼叫的本機工具。
+    h = Harness(mcp_manager=None)
+    h.spec_cache[SESSION] = _spec()
+    status, body = await h.execute({"method": "tools/list"})
+    assert status == 200
+    names = body["result"]["tool_names"]
+    assert "sys_session_list" in names
+    assert "jira__search" not in names
+    assert body["result"]["failures"] == {}
 
 
 async def test_tools_list_without_a_spec_reports_it() -> None:
@@ -232,11 +259,14 @@ async def test_tools_list_returns_schemas_from_a_cached_resolved_spec() -> None:
     h.spec_cache[SESSION] = ResolvedSpec(spec=_spec(), workdir=Path("/tmp/wd"))
     status, body = await h.execute({"method": "tools/list"})
     assert status == 200
-    assert body["result"] == {
-        "schemas": [{"name": "jira__search"}],
-        "tool_names": ["jira__search"],
-        "failures": {},
-    }
+    # WOOWTECH overlay：外部 MCP 的 schema 在前，後面接上可以呼叫的本機工具。
+    result = body["result"]
+    assert result["schemas"][0] == {"name": "jira__search"}
+    names = [schema["name"] for schema in result["schemas"]]
+    assert len(names) == len(set(names))
+    assert set(result["tool_names"]) == set(names)
+    assert {"jira__search", "sys_session_list"} <= set(names)
+    assert result["failures"] == {}
 
 
 async def test_tools_list_falls_back_to_the_spec_resolver() -> None:
@@ -244,7 +274,7 @@ async def test_tools_list_falls_back_to_the_spec_resolver() -> None:
     h.resolved_spec = _spec()
     status, body = await h.execute({"method": "tools/list"})
     assert status == 200
-    assert body["result"]["tool_names"] == ["jira__search"]
+    assert "jira__search" in body["result"]["tool_names"]
 
 
 async def test_tools_list_hides_schema_failures_behind_a_generic_message() -> None:
@@ -374,10 +404,10 @@ async def test_builtin_tool_dispatch_passes_session_context(
     h = Harness()
     spec = _spec()
     h.spec_cache[SESSION] = ResolvedSpec(spec=spec, workdir=Path("/tmp/bundle"))
-    status, body = await h.execute(_call("sys_list_files", arguments={"path": "."}))
+    status, body = await h.execute(_call("sys_session_list", arguments={"path": "."}))
     assert status == 200
     assert body == {"result": {"output": "listed"}}
-    assert seen["tool_name"] == "sys_list_files"
+    assert seen["tool_name"] == "sys_session_list"
     assert json.loads(seen["arguments"]) == {"path": "."}
     assert seen["agent_spec"] is spec
     assert seen["local_tool_workdir"] == Path("/tmp/bundle")
@@ -426,14 +456,15 @@ async def test_builtin_tool_resolves_the_spec_entry_when_uncached(
     h = Harness(spec_resolver=object())
     spec = _spec()
     h.resolved_entry = ResolvedSpec(spec=spec, workdir=Path("/tmp/resolved"))
-    await h.execute(_call("sys_list_files"))
+    await h.execute(_call("sys_session_list"))
     assert seen["agent_spec"] is spec
     assert seen["local_tool_workdir"] == Path("/tmp/resolved")
 
 
-async def test_builtin_tool_tolerates_a_failed_spec_resolution(
+async def test_builtin_tool_refuses_without_a_resolvable_spec(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # WOOWTECH overlay：解析不到 agent spec 時不能略過本機工具的授權檢查。
     seen: dict[str, Any] = {}
 
     async def _execute_tool(**kwargs: Any) -> str:
@@ -443,11 +474,30 @@ async def test_builtin_tool_tolerates_a_failed_spec_resolution(
     monkeypatch.setattr("omnigent.runner.tool_dispatch.execute_tool", _execute_tool)
     h = Harness(spec_resolver=object())
     h.resolve_error = OmnigentError("agent gone", code=ErrorCode.NOT_FOUND)
+    status, body = await h.execute(_call("sys_session_list"))
+    assert status == 200
+    assert body["error"]["code"] == -32000
+    assert "No spec available" in body["error"]["message"]
+    assert seen == {}
+
+
+async def test_unknown_builtin_tool_is_a_protocol_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # WOOWTECH overlay：未註冊的工具回 MCP protocol error，不交給 execute_tool。
+    seen: dict[str, Any] = {}
+
+    async def _execute_tool(**kwargs: Any) -> str:
+        seen.update(kwargs)
+        return "ok"
+
+    monkeypatch.setattr("omnigent.runner.tool_dispatch.execute_tool", _execute_tool)
+    h = Harness()
+    h.spec_cache[SESSION] = _spec()
     status, body = await h.execute(_call("sys_list_files"))
     assert status == 200
-    assert body == {"result": {"output": "ok"}}
-    assert seen["agent_spec"] is None
-    assert seen["local_tool_workdir"] == Path("/tmp/runner-workspace")
+    assert body == {"error": {"code": -32602, "message": "Unknown tool: sys_list_files"}}
+    assert seen == {}
 
 
 async def test_builtin_tool_failure_is_generic_to_the_client(
@@ -459,7 +509,7 @@ async def test_builtin_tool_failure_is_generic_to_the_client(
     monkeypatch.setattr("omnigent.runner.tool_dispatch.execute_tool", _execute_tool)
     h = Harness()
     h.spec_cache[SESSION] = _spec()
-    status, body = await h.execute(_call("sys_list_files"))
+    status, body = await h.execute(_call("sys_session_list"))
     assert status == 200
     assert body["error"]["code"] == -32000
     assert "/etc/shadow" not in body["error"]["message"]
