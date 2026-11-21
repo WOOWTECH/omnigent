@@ -15,6 +15,7 @@ import {
   DownloadIcon,
   GitBranchIcon,
   KeyboardIcon,
+  KeyRoundIcon,
   PaletteIcon,
   PlugIcon,
   SettingsIcon,
@@ -48,6 +49,7 @@ export type SettingsSectionId =
   | "members"
   | "policies"
   | "sharing"
+  | "mcp-server"
   | "archived"
   | "cli"
   | "updates";
@@ -66,6 +68,7 @@ const SECTION_IDS: readonly SettingsSectionId[] = [
   "members",
   "policies",
   "sharing",
+  "mcp-server",
   "archived",
   "cli",
   "updates",
@@ -88,10 +91,10 @@ interface SettingsNavGroup {
  * Nav groups for the current deploy. The Account section appears whenever the
  * deploy has a login session (accounts OR OIDC/SSO — i.e. a `login_url`
  * exists), so an SSO user can see who they're signed in as and sign out; it's
- * absent only in header single-user mode. The Admin group (Members / Policies)
- * appears for admins in ANY multi-user mode since both accounts and OIDC share
- * the `users.is_admin` flag and the server enforces admin on every route; the
- * Desktop group (Local CLI) appears only in the Electron shell.
+ * absent only in header single-user mode. The Admin group appears for admins
+ * in accounts and OIDC modes; Omnigent MCP is additionally limited to accounts
+ * mode because profile creation verifies an account password. The Desktop
+ * group (Local CLI) appears only in the Electron shell.
  */
 export function settingsNavGroups(
   hasAuthSession: boolean,
@@ -101,6 +104,7 @@ export function settingsNavGroups(
   integrationsEnabled = false,
   customAgentsEnabled = false,
   mcpEnabled = false,
+  accountsEnabled = false,
 ): SettingsNavGroup[] {
   const harnesses: SettingsNavItem = {
     id: "harnesses",
@@ -151,10 +155,9 @@ export function settingsNavGroups(
   // Admin: server-wide management, admin-only. Nested here as sub-categories
   // (rather than links out of the Account section) so entering them stays
   // inside /settings — the sidebar keeps the settings nav instead of snapping
-  // back to the conversation list. Gated on `isAdmin` alone (not
-  // `accountsEnabled`) so the surface also appears under OIDC/SSO, the one
-  // mode where there's otherwise no admin chrome at all. Members runs
-  // read-only under OIDC (no password actions); Policies is identical.
+  // back to the conversation list. Members and Policies also appear under
+  // OIDC/SSO; MCP profiles require built-in accounts auth because they verify
+  // a password during linking.
   if (isAdmin) {
     // Members (manage other accounts) and Sharing (grant sessions to other
     // users) have no meaning in single-user mode — there are no other users —
@@ -164,6 +167,9 @@ export function settingsNavGroups(
     if (!isSingleUser) adminItems.push({ id: "members", label: "Members", icon: UsersIcon });
     adminItems.push({ id: "policies", label: "Policies", icon: ShieldCheckIcon });
     if (!isSingleUser) adminItems.push({ id: "sharing", label: "Sharing", icon: Share2Icon });
+    if (accountsEnabled) {
+      adminItems.push({ id: "mcp-server", label: "Omnigent MCP", icon: KeyRoundIcon });
+    }
     groups.push({ title: "Admin", items: adminItems });
   }
   groups.push({
@@ -203,6 +209,7 @@ export function useSettingsRoute(): {
   const isValidSection =
     (SECTION_IDS as readonly string[]).includes(next) &&
     !(singleUser && (next === "members" || next === "sharing")) &&
+    !(next === "mcp-server" && info !== "loading" && !info.accounts_enabled) &&
     !(next === "custom-agents" && !customAgentsSettingsEnabled(info));
   const section = isValidSection ? (next as SettingsSectionId) : defaultSection;
   const harness = section === "harnesses" ? segments[idx + 2] : undefined;
@@ -266,6 +273,7 @@ export function SettingsSidebarBody({
     integrationsEnabled,
     customAgentsSettingsEnabled(info),
     mcpEnabled,
+    info !== "loading" && info.accounts_enabled,
   );
 
   return (

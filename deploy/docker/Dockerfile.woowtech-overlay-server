@@ -1,34 +1,16 @@
-# WOOWTECH fork 專用：以上游 v0.21.0 server image 為底，換掉：
-# 1. MCP 回應的 orchestration.py（保留 tool 失敗的 isError 標記）；
-# 2. Web UI bundle（新對話可替 OpenCode 先選模型）；
-# 3. server/app.py（/docs、/redoc、/openapi.json 預設不公開，OMNIGENT_PUBLIC_API_DOCS=1 才開；
-#    SPA fallback 只接網頁路由；OMNIGENT_PUBLIC_HSTS=1 時所有回應帶 HSTS）；
-# 4. routes/hosts.py、stores/host_store.py（DELETE /v1/hosts/{id}；主機清單與詳情帶 created_at、last_seen）。
-# 5. pip 的安全修補版（固定 wheel 雜湊），以及指定 Debian 安全更新。
-#    oauthlib：v0.21.0 的 image 已是 4.0.1（上游 Dockerfile 用 `uv pip install -e .`，不吃 uv.lock 的
-#    4.0.0），0.20 overlay 的重裝步驟拿掉，只在最後確認版本。
-# 6. routes/_gzip_route.py（略過 gzip 時完整保留 ASGI response start 與 body）。
-#    v0.21.0 的原檔與 v0.20.0 相同；image 裡是 Starlette 1.10.0，不修會讓檔案下載與 binary 預覽回 500。
+# syntax=docker/dockerfile:1
+# Both server variants consume the exact portable wheel produced from source S.
+# Override BASE_IMAGE with the pinned generic-server index for Podman.
+ARG BASE_IMAGE=ghcr.io/omnigent-ai/omnigent-server-kubernetes:v0.21.0@sha256:d83a3dce03e2cd2e3e1a8cdf8b20d9696838dcbfbc6ceee3cabe5fbc0c23b657
+FROM ${BASE_IMAGE}
+ARG SOURCE_COMMIT
+ARG WHEEL_SHA256
+ARG BASE_IMAGE
+LABEL org.opencontainers.image.source="https://github.com/WOOWTECH/omnigent" \
+      org.opencontainers.image.revision="${SOURCE_COMMIT}" \
+      io.woowtech.omnigent.wheel-sha256="${WHEEL_SHA256}" \
+      io.woowtech.omnigent.base-image="${BASE_IMAGE}"
 
-# ── Web UI builder：與上游 deploy/docker/Dockerfile 的 web-builder stage 相同做法 ──
-FROM --platform=$BUILDPLATFORM node:22-slim AS web-builder
-WORKDIR /web
-COPY pnpm-workspace.yaml pnpm-lock.yaml ./
-COPY patches/ ./patches/
-COPY web/package.json ./web/
-COPY web/electron/package.json ./web/electron/
-RUN npm install -g pnpm@11.15.1
-RUN pnpm install --frozen-lockfile --filter web
-COPY web/ ./web/
-ARG VITE_OMNIGENT_HOST_ROUTING=false
-RUN pnpm --filter web run build
-# 確認 OpenCode 帶 modelPicker capability 的版本真的進了 bundle。
-RUN grep -lE 'displayName:.OpenCode.,iconKind:.opencode.,sortRank:25,capabilities:\[.modelPicker.\]' \
-      /web/omnigent/server/static/web-ui/assets/*.js
-
-FROM ghcr.io/omnigent-ai/omnigent-server-kubernetes:v0.21.0@sha256:d83a3dce03e2cd2e3e1a8cdf8b20d9696838dcbfbc6ceee3cabe5fbc0c23b657
-
-# Apply the shared OS and Python installer security fixes.
 COPY deploy/docker/woowtech-runtime-security.sh deploy/docker/woowtech-pip-security.txt /build/
 RUN sh /build/woowtech-runtime-security.sh
 
@@ -42,50 +24,15 @@ RUN printf '%s\n' \
     | sha256sum -c -
 RUN test -f /build/omnigent/server/static/web-ui/index.html
 
-COPY omnigent/server/routes/_sessions/orchestration.py /build/omnigent/server/routes/_sessions/orchestration.py
-COPY omnigent/server/app.py /build/omnigent/server/app.py
-COPY omnigent/server/routes/hosts.py /build/omnigent/server/routes/hosts.py
-COPY omnigent/server/routes/_gzip_route.py /build/omnigent/server/routes/_gzip_route.py
-COPY omnigent/stores/host_store.py /build/omnigent/stores/host_store.py
-# 整份換掉，舊 bundle 的 hash 檔名不留在 image 裡。
-RUN rm -rf /build/omnigent/server/static/web-ui
-COPY --from=web-builder /web/omnigent/server/static/web-ui /build/omnigent/server/static/web-ui
-
-RUN /opt/venv/bin/python - <<'PY'
-from pathlib import Path
-import inspect
-import importlib.metadata
-import omnigent.server.routes._sessions.orchestration as module
-
-assert importlib.metadata.version('omnigent') == '0.21.0', importlib.metadata.version('omnigent')
-assert importlib.metadata.version('oauthlib') == '4.0.1', importlib.metadata.version('oauthlib')
-assert importlib.metadata.version('pip') == '26.3', importlib.metadata.version('pip')
-assert Path(module.__file__).resolve() == Path('/build/omnigent/server/routes/_sessions/orchestration.py')
-source = inspect.getsource(module._handle_mcp_tools_call)
-assert 'result["isError"] = True' in source
-assert 'mcp_response_from_tool_result(parsed_output)' in source
-assert Path('/build/omnigent/server/static/web-ui/index.html').is_file()
-
-import omnigent.server.app as app_module
-import omnigent.server.routes.hosts as hosts_module
-import omnigent.server.routes._gzip_route as gzip_route_module
-import omnigent.stores.host_store as host_store_module
-
-for overlay_module, overlay_path in (
-    (app_module, '/build/omnigent/server/app.py'),
-    (hosts_module, '/build/omnigent/server/routes/hosts.py'),
-    (gzip_route_module, '/build/omnigent/server/routes/_gzip_route.py'),
-    (host_store_module, '/build/omnigent/stores/host_store.py'),
-):
-    assert Path(overlay_module.__file__).resolve() == Path(overlay_path), overlay_module.__file__
-assert 'public_api_docs' in inspect.signature(app_module.create_app).parameters
-assert 'env_var_is_truthy("OMNIGENT_PUBLIC_API_DOCS", default=False)' in inspect.getsource(app_module.create_app)
-assert app_module._is_web_ui_history_fallback_path('c/conv_abc123')
-assert not app_module._is_web_ui_history_fallback_path('wp-admin')
-assert app_module._is_web_ui_history_fallback_path('grid/grid_abc123')
-assert 'OMNIGENT_PUBLIC_HSTS' in inspect.getsource(app_module.create_app)
-assert '@router.delete("/hosts/{host_id}")' in inspect.getsource(hosts_module.create_hosts_router)
-assert 'require_offline' in inspect.signature(host_store_module.HostStore.delete_host).parameters
-assert '_skip_compression' in inspect.getsource(gzip_route_module._StateAwareGZipResponder.send_with_compression)
-print('WOOWTECH v0.21.0 server overlay imported: PASS')
-PY
+# A named context prevents a Docker build from silently rebuilding another wheel/UI.
+COPY --from=mcp-artifact / /opt/woow-artifact/
+COPY scripts/woowtech_mcp_artifact.py /opt/woow-artifact/verify.py
+RUN test -n "$SOURCE_COMMIT" && test -n "$WHEEL_SHA256" \
+ && printf '%s  %s\n' "$WHEEL_SHA256" /opt/woow-artifact/omnigent-0.21.0-py3-none-any.whl | sha256sum -c - \
+ && /opt/venv/bin/python /opt/woow-artifact/verify.py verify \
+      --artifact /opt/woow-artifact --source-commit "$SOURCE_COMMIT" \
+ && /opt/venv/bin/python -m pip install --no-deps --no-index --force-reinstall \
+      /opt/woow-artifact/omnigent-0.21.0-py3-none-any.whl \
+ && rm -rf /build/omnigent /build/omnigent.egg-info \
+ && /opt/venv/bin/python /opt/woow-artifact/verify.py runtime \
+      --artifact /opt/woow-artifact --source-commit "$SOURCE_COMMIT" --debian-security

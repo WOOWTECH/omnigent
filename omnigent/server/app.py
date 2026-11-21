@@ -2228,8 +2228,14 @@ def create_app(
 
         session_pull_requests.install_refresher(pull_request_refresher)
         try:
-            with monitor_event_loop():
-                yield
+            mcp_server = getattr(app_inst.state, "omnigent_mcp_server", None)
+            if mcp_server is None:
+                with monitor_event_loop():
+                    yield
+            else:
+                async with mcp_server.session_manager.run():
+                    with monitor_event_loop():
+                        yield
         finally:
             session_pull_requests.install_refresher(None)
             await pull_request_refresher.aclose()
@@ -2921,6 +2927,15 @@ def create_app(
             error_impact=ErrorImpact.BENIGN.value,
             error_phase=ErrorPhase.REQUEST.value,
         )
+        if request.url.path.rstrip("/").endswith("/v1/admin/mcp-server/profiles"):
+            safe_errors = [
+                {key: error[key] for key in ("type", "loc", "msg")} for error in exc.errors()
+            ]
+            response = await request_validation_exception_handler(
+                request, RequestValidationError(safe_errors)
+            )
+            response.headers["Cache-Control"] = "no-store"
+            return response
         return await request_validation_exception_handler(request, exc)
 
     @app.exception_handler(ConversationNotFoundError)
@@ -5092,6 +5107,7 @@ def create_app(
     # /magic/redeem, /users, /users/{id}/reset, /users/me/password).
     # Must be registered BEFORE the SPA static mount because the SPA's
     # HTML5-history fallback catches all unmatched extensionless paths.
+    mcp_profile_store = None
     if auth_provider is not None and getattr(auth_provider, "login_url", None):
         from omnigent.server.auth import UnifiedAuthProvider
 
@@ -5141,6 +5157,23 @@ def create_app(
                 prefix="/auth",
                 tags=["auth"],
             )
+            if permission_store is not None:
+                from omnigent.server.mcp_profile_store import McpServerProfileStore
+                from omnigent.server.routes.mcp_server_profiles import (
+                    create_mcp_server_profiles_router,
+                )
+
+                mcp_profile_store = McpServerProfileStore(account_store.storage_location)
+                app.include_router(
+                    create_mcp_server_profiles_router(
+                        profile_store=mcp_profile_store,
+                        account_store=account_store,
+                        permission_store=permission_store,
+                        auth_provider=auth_provider,
+                    ),
+                    prefix="/v1",
+                    tags=["mcp server profiles"],
+                )
         elif isinstance(auth_provider, UnifiedAuthProvider):
             from omnigent.server.routes.auth import create_auth_router
 
@@ -5315,6 +5348,23 @@ def create_app(
     for router, prefix, tags in all_extra_routers:
         app.include_router(router, prefix=prefix, tags=[*tags])
 
+    if mcp_profile_store is not None:
+        from omnigent.server.mcp_server import (
+            McpMountPathMiddleware,
+            create_omnigent_mcp_server,
+        )
+
+        omnigent_mcp_server = create_omnigent_mcp_server(
+            app=app,
+            auth_provider=auth_provider,
+        )
+        app.state.omnigent_mcp_server = omnigent_mcp_server
+        app.mount(
+            "/mcp",
+            McpMountPathMiddleware(omnigent_mcp_server.streamable_http_app()),
+            name="omnigent-mcp",
+        )
+
     web_ui_dist = _WEB_UI_DIST
     web_ui_present = web_ui_dist.is_dir() and (web_ui_dist / "index.html").is_file()
     if web_ui_present:
@@ -5346,6 +5396,17 @@ def create_app(
         # Only wired when a base path is configured: a root deployment pays
         # no per-request cost.
         app.add_middleware(BasePathMiddleware, base_path=resolved_base_path)
+    if mcp_profile_store is not None and account_store is not None:
+        from omnigent.server.mcp_server import McpProfilePathMiddleware
+
+        # Added outermost so it can authenticate and scrub the bearer path
+        # before BasePathMiddleware and the server's access logger see it.
+        app.add_middleware(
+            McpProfilePathMiddleware,
+            profile_store=mcp_profile_store,
+            account_store=account_store,
+            base_path=resolved_base_path,
+        )
 
     return app
 
