@@ -347,6 +347,18 @@ def verify(artifact: Path, source_commit: str | None = None) -> tuple[dict, dict
     return receipt, manifest
 
 
+def verify_debian_security(variant: str) -> None:
+    require(variant in ("server", "server-kubernetes"), "Unknown image variant")
+    try:
+        oauthlib = importlib.metadata.version("oauthlib")
+    except importlib.metadata.PackageNotFoundError:
+        # Only the Kubernetes extra brings oauthlib into the upstream base image.
+        require(variant == "server", "Kubernetes image is missing oauthlib")
+    else:
+        require(oauthlib == "4.0.1", "Wrong oauthlib security version")
+    require(importlib.metadata.version("pip") == "26.3", "Wrong pip security version")
+
+
 def runtime(args: argparse.Namespace) -> None:
     receipt, manifest = verify(args.artifact, args.source_commit)
     require(importlib.metadata.version("omnigent") == "0.21.0", "Wrong installed core version")
@@ -377,10 +389,7 @@ def runtime(args: argparse.Namespace) -> None:
     require(app._is_web_ui_history_fallback_path("grid/grid_abc123"), "Grid SPA route broken")
     require(not app._is_web_ui_history_fallback_path("wp-admin"), "Public route guard missing")
     if args.debian_security:
-        require(
-            importlib.metadata.version("oauthlib") == "4.0.1", "Wrong oauthlib security version"
-        )
-        require(importlib.metadata.version("pip") == "26.3", "Wrong pip security version")
+        verify_debian_security(args.image_variant)
     print(
         json.dumps(
             {
@@ -407,6 +416,11 @@ def main() -> None:
         verifier.add_argument("--source-commit")
         if name == "runtime":
             verifier.add_argument("--debian-security", action="store_true")
+            verifier.add_argument(
+                "--image-variant",
+                choices=("server", "server-kubernetes"),
+                default="server-kubernetes",
+            )
     args = parser.parse_args()
     if args.command == "build":
         build(args)

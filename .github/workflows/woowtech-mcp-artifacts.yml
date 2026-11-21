@@ -127,6 +127,7 @@ jobs:
           labels: io.woowtech.omnigent.variant=${{ matrix.variant }}
           build-args: |
             BASE_IMAGE=${{ matrix.base }}
+            IMAGE_VARIANT=${{ matrix.variant }}
             SOURCE_COMMIT=${{ inputs.source_commit }}
             WHEEL_SHA256=${{ needs.wheel.outputs.wheel_sha256 }}
       - name: Verify candidate runtime and OCI identity
@@ -142,7 +143,7 @@ jobs:
           test "$(docker inspect --format '{{ index .Config.Labels "io.woowtech.omnigent.base-image" }}' "$IMAGE_TAG")" = "$BASE_IMAGE"
           docker run --rm --entrypoint /opt/venv/bin/python "$IMAGE_TAG" \
             /opt/woow-artifact/verify.py runtime --artifact /opt/woow-artifact \
-            --source-commit "$SOURCE_COMMIT" --debian-security
+            --source-commit "$SOURCE_COMMIT" --debian-security --image-variant "$VARIANT"
       - name: Log in to GHCR
         if: inputs.publish
         uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee

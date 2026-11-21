@@ -5,11 +5,13 @@ ARG BASE_IMAGE=ghcr.io/omnigent-ai/omnigent-server-kubernetes:v0.21.0@sha256:d83
 FROM ${BASE_IMAGE}
 ARG SOURCE_COMMIT
 ARG WHEEL_SHA256
+ARG IMAGE_VARIANT=server-kubernetes
 ARG BASE_IMAGE
 LABEL org.opencontainers.image.source="https://github.com/WOOWTECH/omnigent" \
       org.opencontainers.image.revision="${SOURCE_COMMIT}" \
       io.woowtech.omnigent.wheel-sha256="${WHEEL_SHA256}" \
-      io.woowtech.omnigent.base-image="${BASE_IMAGE}"
+      io.woowtech.omnigent.base-image="${BASE_IMAGE}" \
+      io.woowtech.omnigent.variant="${IMAGE_VARIANT}"
 
 COPY deploy/docker/woowtech-runtime-security.sh deploy/docker/woowtech-pip-security.txt /build/
 RUN sh /build/woowtech-runtime-security.sh
@@ -35,4 +37,5 @@ RUN test -n "$SOURCE_COMMIT" && test -n "$WHEEL_SHA256" \
       /opt/woow-artifact/omnigent-0.21.0-py3-none-any.whl \
  && rm -rf /build/omnigent /build/omnigent.egg-info \
  && /opt/venv/bin/python /opt/woow-artifact/verify.py runtime \
-      --artifact /opt/woow-artifact --source-commit "$SOURCE_COMMIT" --debian-security
+      --artifact /opt/woow-artifact --source-commit "$SOURCE_COMMIT" --debian-security \
+      --image-variant "$IMAGE_VARIANT"

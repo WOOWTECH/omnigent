@@ -201,6 +201,10 @@ def test_workflow_passes_exact_shared_wheel_and_preserves_host() -> None:
     assert "io.woowtech.omnigent.variant" in verification["run"]
     assert "io.woowtech.omnigent.base-image" in verification["run"]
     assert "needs.wheel.outputs.wheel_sha256" in build["with"]["build-args"]
+    assert "IMAGE_VARIANT=${{ matrix.variant }}" in build["with"]["build-args"]
+    assert '--image-variant "$VARIANT"' in verification["run"]
+    dockerfile = (_ROOT / "deploy/docker/Dockerfile.woowtech-overlay-server").read_text()
+    assert '--image-variant "$IMAGE_VARIANT"' in dockerfile
     old = yaml.safe_load(
         (_ROOT / ".github/workflows/woowtech-overlay-v0210-qa-image.yml").read_text()
     )
@@ -252,3 +256,28 @@ def test_manifest_downloads_only_its_two_architecture_receipts(variant: str) -> 
         "image-receipts/amd64",
         "image-receipts/arm64",
     }
+
+
+@pytest.mark.parametrize("variant", ["server", "server-kubernetes"])
+@pytest.mark.parametrize("oauthlib", [None, "4.0.0", "4.0.1"])
+@pytest.mark.parametrize("pip", ["26.2", "26.3"])
+def test_debian_security_matches_variant_dependencies(
+    monkeypatch: pytest.MonkeyPatch, variant: str, oauthlib: str | None, pip: str
+) -> None:
+    def version(name: str) -> str:
+        if name == "oauthlib":
+            if oauthlib is None:
+                raise artifact.importlib.metadata.PackageNotFoundError(name)
+            return oauthlib
+        assert name == "pip"
+        return pip
+
+    monkeypatch.setattr(artifact.importlib.metadata, "version", version)
+    acceptable = pip == "26.3" and (
+        oauthlib == "4.0.1" or (variant == "server" and oauthlib is None)
+    )
+    if acceptable:
+        artifact.verify_debian_security(variant)
+    else:
+        with pytest.raises((ValueError, artifact.importlib.metadata.PackageNotFoundError)):
+            artifact.verify_debian_security(variant)
