@@ -210,3 +210,45 @@ def test_workflow_passes_exact_shared_wheel_and_preserves_host() -> None:
     ]
     # The external receipt cannot create a wheel checksum circular dependency.
     assert json.loads(artifact.canonical({"wheelFilename": artifact.WHEEL}))["wheelFilename"]
+
+
+@pytest.mark.parametrize("variant", ["server", "server-kubernetes"])
+def test_manifest_downloads_only_its_two_architecture_receipts(variant: str) -> None:
+    import fnmatch
+
+    import yaml
+
+    workflow = yaml.safe_load((_ROOT / ".github/workflows/woowtech-mcp-artifacts.yml").read_text())
+    downloads = [
+        step["with"]
+        for step in workflow["jobs"]["manifests"]["steps"]
+        if str(step.get("uses", "")).startswith("actions/download-artifact@")
+    ]
+    available = [
+        f"woow-mcp-image-{image_variant}-{arch}-42-2"
+        for image_variant in ("server", "server-kubernetes")
+        for arch in ("amd64", "arm64")
+    ]
+    selected = []
+    for download in downloads:
+        selector = download.get("name", download.get("pattern", ""))
+        for expression, value in (
+            ("${{ matrix.variant }}", variant),
+            ("${{ github.run_id }}", "42"),
+            ("${{ github.run_attempt }}", "2"),
+        ):
+            selector = selector.replace(expression, value)
+        selected.extend(
+            name
+            for name in available
+            if (name == selector if "name" in download else fnmatch.fnmatchcase(name, selector))
+        )
+    assert sorted(selected) == [
+        f"woow-mcp-image-{variant}-amd64-42-2",
+        f"woow-mcp-image-{variant}-arm64-42-2",
+    ]
+    assert all("name" in download for download in downloads)
+    assert {download["path"] for download in downloads} == {
+        "image-receipts/amd64",
+        "image-receipts/arm64",
+    }
