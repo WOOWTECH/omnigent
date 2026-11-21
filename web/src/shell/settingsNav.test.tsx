@@ -77,6 +77,16 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe("settingsNavGroups", () => {
+  it("shows inbound MCP profiles only to accounts-mode admins", () => {
+    const sections = (admin: boolean, accounts: boolean) =>
+      settingsNavGroups(true, false, admin, false, false, false, false, accounts)
+        .flatMap((group) => group.items)
+        .map((item) => item.id);
+    expect(sections(true, true)).toContain("mcp-server");
+    expect(sections(false, true)).not.toContain("mcp-server");
+    expect(sections(true, false)).not.toContain("mcp-server");
+  });
+
   it("starts general preferences with a General gear entry", () => {
     const general = settingsNavGroups(false, false).find((group) => group.title === "General");
     expect(general?.items[0]).toMatchObject({

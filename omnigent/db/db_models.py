@@ -563,6 +563,34 @@ class SqlDeviceGrant(OmnigentBase):
     )
 
 
+class SqlMcpServerProfile(OmnigentBase):
+    """Revocable, account-bound credentials for the inbound MCP endpoint."""
+
+    __tablename__ = "mcp_server_profiles"
+
+    workspace_id: Mapped[int] = mapped_column(
+        BigInteger,
+        primary_key=True,
+        nullable=False,
+        server_default="0",
+        default=current_workspace_id,
+    )
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    name: Mapped[str] = mapped_column(String(128), nullable=False)
+    user_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    account_generation: Mapped[str] = mapped_column(String(32), nullable=False)
+    created_by: Mapped[str] = mapped_column(String(128), nullable=False)
+    token_hash: Mapped[bytes] = mapped_column(_CKSUM32, nullable=False)
+    created_at: Mapped[int] = mapped_column(Integer, nullable=False)
+    last_used_at: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    revoked_at: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    __table_args__ = (
+        Index("ux_mcp_server_profiles_token_hash", "workspace_id", "token_hash", unique=True),
+        Index("ix_mcp_server_profiles_user", "workspace_id", "user_id", "created_at"),
+    )
+
+
 class SqlSessionPermission(OmnigentBase):
     """
     SQLAlchemy model for the ``session_permissions`` table.

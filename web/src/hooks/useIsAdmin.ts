@@ -26,6 +26,8 @@ export function useIsAdmin(): boolean {
     // Seed from the already-resolved cache so first paint is correct when
     // identity resolved during boot (the common case).
     initialData: getCurrentIsAdmin,
+    // The seed can precede the async identity probe; resolve it on mount.
+    initialDataUpdatedAt: 0,
   });
   return data;
 }
