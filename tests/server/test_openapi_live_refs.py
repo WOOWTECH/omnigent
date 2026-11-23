@@ -36,7 +36,10 @@ def dump_module() -> Any:  # type: ignore[explicit-any]
 @pytest.fixture(scope="module")
 def live_spec(dump_module: Any) -> dict[str, Any]:  # type: ignore[explicit-any]
     """The document the server serves at ``/openapi.json``."""
-    app = dump_module._build_app_with_stub_stores()
+    # WOOWTECH overlay：/openapi.json 預設不公開（OMNIGENT_PUBLIC_API_DOCS），這裡明確打開。
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setenv("OMNIGENT_PUBLIC_API_DOCS", "1")
+        app = dump_module._build_app_with_stub_stores()
     response = TestClient(app).get("/openapi.json")
     assert response.status_code == 200
     body: dict[str, Any] = response.json()  # type: ignore[explicit-any]

@@ -6125,7 +6125,8 @@ describe("automation harness settings", () => {
     ["devin-native", true, true, true],
     ["cursor-native", false, false, true],
     ["antigravity-native", false, false, true],
-    ["opencode-native", false, false, false],
+    // WOOWTECH overlay：OpenCode 有 modelPicker（host 的 `opencode models`），排程也能選模型；沒有 effort。
+    ["opencode-native", true, false, false],
   ])("shows independent settings for %s", (harness, model, effort, permission) => {
     mockHarness(harness);
     renderDialog();

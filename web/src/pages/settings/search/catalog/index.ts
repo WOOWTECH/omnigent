@@ -33,6 +33,8 @@ export const SECTION_CATALOGS: Readonly<Record<SettingsSectionId, readonly Setti
   members: MEMBERS_SETTINGS,
   policies: POLICIES_SETTINGS,
   sharing: SHARING_SETTINGS,
+  // WOOWTECH overlay：Omnigent MCP 頁面沒有可搜尋的設定列。
+  "mcp-server": [],
   archived: ARCHIVED_SETTINGS,
   cli: CLI_SETTINGS,
   updates: UPDATES_SETTINGS,

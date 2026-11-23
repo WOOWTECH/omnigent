@@ -80,7 +80,7 @@ afterEach(cleanup);
 describe("settingsNavGroups", () => {
   it("shows inbound MCP profiles only to accounts-mode admins", () => {
     const sections = (admin: boolean, accounts: boolean) =>
-      settingsNavGroups(true, false, admin, false, false, false, false, accounts)
+      settingsNavGroups(true, false, admin, false, false, false, false, false, true, accounts)
         .flatMap((group) => group.items)
         .map((item) => item.id);
     expect(sections(true, true)).toContain("mcp-server");
