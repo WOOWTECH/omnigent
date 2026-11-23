@@ -133,8 +133,9 @@ def test_upgrade_matches_models_and_downgrade_drops_tables(tmp_path: Path) -> No
     assert {"inbox_items", "scheduled_task_shares"} <= tables
     assert "kind" in {column["name"] for column in rolled_back.get_columns("scheduled_tasks")}
     with engine.connect() as connection:
-        assert connection.execute(
-            sa.text("SELECT version_num FROM alembic_version")
-        ).scalars().all() == ["27d16059fab9"]
+        # WOOWTECH overlay：MCP profiles（za3b4c5d6e7f）是另一條分支，只退上游這條時它照樣留著。
+        assert sorted(
+            connection.execute(sa.text("SELECT version_num FROM alembic_version")).scalars().all()
+        ) == ["27d16059fab9", "za3b4c5d6e7f"]
     engine.dispose()
     clear_engine_cache()
