@@ -37,7 +37,10 @@ def _build_fixture(path: Path) -> tuple[dict, dict]:
             b'mcp-server connection_url displayName:"OpenCode",iconKind:"opencode",'
             b'sortRank:25,capabilities:["modelPicker"]',
         )
-        wheel.writestr("omnigent-0.21.0.dist-info/METADATA", b"Name: omnigent\nVersion: 0.21.0\n")
+        wheel.writestr(
+            f"omnigent-{artifact.CORE_VERSION}.dist-info/METADATA",
+            f"Name: omnigent\nVersion: {artifact.CORE_VERSION}\n".encode(),
+        )
         wheel.writestr("omnigent/_build_info.py", b"BUILD_TIME_EPOCH = 1")
     files = artifact.normalize_wheel(path / artifact.WHEEL, identity)
     manifest = {"files": files, "sourceFiles": {"source.py": "b" * 64}}
@@ -65,7 +68,7 @@ def test_normalization_is_repeatable_and_keeps_valid_record(tmp_path: Path) -> N
     assert artifact.verify(directory, "a" * 40)[0] == receipt
     payload = artifact.wheel_payload(directory / artifact.WHEEL)
     assert b"1700000000" in payload["omnigent/_build_info.py"]
-    assert payload["omnigent-0.21.0.dist-info/RECORD"].count(b",sha256=") == len(payload) - 1
+    assert payload[f"omnigent-{artifact.CORE_VERSION}.dist-info/RECORD"].count(b",sha256=") == len(payload) - 1
 
 
 @pytest.mark.parametrize("failure", ["wheel", "manifest", "source", "snapshot"])
@@ -121,7 +124,7 @@ def test_architecture_receipts_reject_mixed_identity(images, variant: str, failu
         "wheelSha256": "b" * 64,
         "uiSha256": "c" * 64,
         "contentSha256": "d" * 64,
-        "baseImage": f"ghcr.io/omnigent-ai/omnigent-{variant}:v0.21.0@sha256:" + "e" * 64,
+        "baseImage": f"ghcr.io/omnigent-ai/omnigent-{variant}:v{artifact.CORE_VERSION}@sha256:" + "e" * 64,
         "runId": "1",
         "runAttempt": "1",
     }
@@ -148,13 +151,13 @@ def test_public_candidate_tag_and_receipt(
     _build_fixture(directory)
     tag = images.candidate_tag("a" * 40, variant, "42", "2")
     assert tag == (
-        "ghcr.io/woowtech/omnigent-server-kubernetes:0.21.0-mcp.1-"
+        f"ghcr.io/woowtech/omnigent-server-kubernetes:{artifact.CORE_VERSION}-mcp.1-"
         + variant
         + "-sha-"
         + "a" * 40
         + "-run-42-2"
     )
-    base = f"ghcr.io/omnigent-ai/omnigent-{variant}:v0.21.0@sha256:" + "e" * 64
+    base = f"ghcr.io/omnigent-ai/omnigent-{variant}:v{artifact.CORE_VERSION}@sha256:" + "e" * 64
     for key, value in {
         "VARIANT": variant,
         "ARCH": "amd64",
@@ -206,7 +209,7 @@ def test_workflow_passes_exact_shared_wheel_and_preserves_host() -> None:
     dockerfile = (_ROOT / "deploy/docker/Dockerfile.woowtech-overlay-server").read_text()
     assert '--image-variant "$IMAGE_VARIANT"' in dockerfile
     old = yaml.safe_load(
-        (_ROOT / ".github/workflows/woowtech-overlay-v0210-qa-image.yml").read_text()
+        (_ROOT / ".github/workflows/woowtech-overlay-v0230-qa-image.yml").read_text()
     )
     assert old["jobs"]["native-mcp"]["uses"] == "./.github/workflows/woowtech-mcp-artifacts.yml"
     assert old["jobs"]["build"]["strategy"]["matrix"]["include"] == [

@@ -1,9 +1,9 @@
-name: WOOWTECH v0.21.0 overlay images
+name: WOOWTECH v0.23.0 overlay images
 
 # WOOWTECH: native MCP server candidates use one portable wheel; host keeps its existing overlay.
 # - PR（目標 main）：兩個 image 都 build，不推送，只當檢查。
-# - push 到 main、release/woowtech-overlay/**、或 0.21 overlay 分支：推送不會重複的候選 tag
-#   <image>:0.21.0-overlay-sha-<commit>-run-<run id>-<attempt>，並把 image@digest 寫進 receipt
+# - push 到 main 或 release/woowtech-overlay/**：推送不會重複的候選 tag
+#   <image>:0.23.0-overlay-sha-<commit>-run-<run id>-<attempt>，並把 image@digest 寫進 receipt
 #   （job summary ＋ artifact）。鏡像、chart pin 與部署一律用 receipt 裡的 digest，另走核可流程。
 # - 不再推送固定 tag：舊的固定 tag（例如 0.20.0-overlay-qa-20261108-security5＝chart 0.1.17 的來源）
 #   不會被這個 workflow 覆寫。
@@ -11,7 +11,7 @@ on:
   pull_request:
     branches: [main]
     paths:
-      - .github/workflows/woowtech-overlay-v0210-qa-image.yml
+      - .github/workflows/woowtech-overlay-v0230-qa-image.yml
       - deploy/docker/Dockerfile.woowtech-overlay-*
       - deploy/docker/woowtech-*
       - omnigent/**
@@ -29,9 +29,8 @@ on:
     branches:
       - main
       - release/woowtech-overlay/**
-      - fix/omnigent-v0210-overlay-20261110
     paths:
-      - .github/workflows/woowtech-overlay-v0210-qa-image.yml
+      - .github/workflows/woowtech-overlay-v0230-qa-image.yml
       - deploy/docker/Dockerfile.woowtech-overlay-*
       - deploy/docker/woowtech-*
       - omnigent/**
@@ -53,7 +52,7 @@ permissions:
 
 env:
   # 與兩個 overlay Dockerfile 的 FROM 版本一致；不一致時 job 直接失敗，避免 tag 標錯版本。
-  OVERLAY_BASE_VERSION: 0.21.0
+  OVERLAY_BASE_VERSION: 0.23.0
 
 concurrency:
   group: woowtech-overlay-${{ github.event.pull_request.number || github.ref }}
@@ -69,7 +68,7 @@ jobs:
 
   build:
     if: github.repository == 'WOOWTECH/omnigent'
-    # v0.21.0 的 custom-lint 不接受 ubuntu-latest；host image 要重建 gh、下載 OpenCode，時間放寬到 45 分鐘。
+    # v0.21.0 起 custom-lint 不接受 ubuntu-latest；host image 要重建 gh、下載 OpenCode，時間放寬到 45 分鐘。
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     strategy:

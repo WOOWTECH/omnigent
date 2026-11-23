@@ -1,11 +1,11 @@
 # WOOW native MCP portable artifact
 
 Task 2 contract for HA, generic server and Kubernetes server. Core metadata stays
-`omnigent==0.21.0`; the WOOW build identity is independent of the PyPI version.
+`omnigent==0.23.0`; the WOOW build identity is independent of the PyPI version.
 
 The artifact directory contains:
 
-- `omnigent-0.21.0-py3-none-any.whl`: identical bytes for every platform.
+- `omnigent-0.23.0-py3-none-any.whl`: identical bytes for every platform.
 - `WOOW_BUILD_RECEIPT.json`: source commit, build ID, wheel SHA-256, UI SHA-256,
   dependency lock hashes, tool versions, migration head and CI provenance.
 - `WOOW_CONTENT_MANIFEST.json`: SHA-256 of every wheel payload file (except the
@@ -16,7 +16,7 @@ HA must copy the wheel from the receipt's immutable `wheelImage`, check
 `wheelSha256`, verify the receipt and
 install the wheel with `--no-deps --force-reinstall`; its existing locked Alpine
 runtime dependency assembly remains authoritative. Do not use a bare
-`omnigent==0.21.0` reinstall after this step. Keep the receipt alongside the image
+`omnigent==0.23.0` reinstall after this step. Keep the receipt alongside the image
 and use `scripts/woowtech_mcp_artifact.py runtime` to verify installed files.
 
 `uiSha256` is SHA-256 of canonical JSON (sorted keys, compact separators, ASCII)
@@ -82,8 +82,8 @@ Both variants publish into the existing public package
 artifact namespace; select runtime behavior from the receipt's `variant` and
 `baseImage`, not the package name. Candidate tags are unique:
 
-- Generic: `0.21.0-mcp.1-server-sha-<S>-run-<runId>-<attempt>`.
-- Kubernetes: `0.21.0-mcp.1-server-kubernetes-sha-<S>-run-<runId>-<attempt>`.
+- Generic: `0.23.0-mcp.1-server-sha-<S>-run-<runId>-<attempt>`.
+- Kubernetes: `0.23.0-mcp.1-server-kubernetes-sha-<S>-run-<runId>-<attempt>`.
 - Architecture tags append `-amd64` or `-arm64` to the matching variant tag.
 
 Each image carries `io.woowtech.omnigent.variant`, immutable base-image and source
@@ -101,7 +101,13 @@ The existing `release/woowtech-overlay/**` branch push invokes the reusable MCP
 workflow. It builds one wheel and four native image candidates, verifies each,
 pushes unique architecture tags, and joins each variant's two digests into a unique
 manifest tag. PR runs execute the same builds/verification without registry writes.
-The existing host build remains independent. Both core package and host stay 0.21.0.
+The existing host build remains independent. Both core package and host stay 0.23.0.
+
+The build ID restarts at `mcp.1` for each core version; tags and receipts always
+carry the core version, so `0.23.0-mcp.1` never collides with `0.21.0-mcp.1`.
+The receipt's `migrationHead` is the merge revision `zb4c5d6e7f80`, which joins the
+MCP profile revision `za3b4c5d6e7f` (released on v0.21.0) with upstream v0.23.0's
+head. Databases created by the 0.21.0 build upgrade through it unchanged.
 
 If a publication attempt fails, rerun all jobs so architecture receipts share
 the same run attempt; mixed-attempt manifest assembly is deliberately rejected.

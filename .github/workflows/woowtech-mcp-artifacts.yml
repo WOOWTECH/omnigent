@@ -89,9 +89,9 @@ jobs:
         variant: [server, server-kubernetes]
         include:
           - variant: server
-            base: ghcr.io/omnigent-ai/omnigent-server:v0.21.0@sha256:9bba2964f015ddbb61da0924267effd1801c0db8f44ecec95f401f24d9a3f90c
+            base: ghcr.io/omnigent-ai/omnigent-server:v0.23.0@sha256:9532f3f73c176342c748f8a1fd3632e73480cb4cc7a64446be6a835e252f2081
           - variant: server-kubernetes
-            base: ghcr.io/omnigent-ai/omnigent-server-kubernetes:v0.21.0@sha256:d83a3dce03e2cd2e3e1a8cdf8b20d9696838dcbfbc6ceee3cabe5fbc0c23b657
+            base: ghcr.io/omnigent-ai/omnigent-server-kubernetes:v0.23.0@sha256:3ae833b9d9bd57fa29bf9c759c94b1bfe73d342b6b16792f65a7e014323bb10d
         arch: [amd64, arm64]
     runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
     timeout-minutes: 40

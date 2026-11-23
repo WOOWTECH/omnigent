@@ -4,7 +4,7 @@ set -eu
 work_dir=$(mktemp -d)
 trap 'rm -rf "$work_dir"' EXIT
 
-# v0.21.0 的 opencode-native harness 只接受 OpenCode >=2.0.18,<2.1.0；2.0.32 是 2.0.x 的最後一版，
+# v0.21.0～v0.23.0 的 opencode-native harness 只接受 OpenCode >=2.0.18,<2.1.0；2.0.32 是 2.0.x 的最後一版，
 # 也是上游 harness_install 的預設版本。2.x 改以 @opencode/cli-<platform> 發佈。
 # baseline 版不需要 AVX2（2026-11-10 實查：叢集四台節點都有 AVX2，沿用 baseline 只是保守選擇）。
 curl -fsSL --retry 3 https://registry.npmjs.org/@opencode/cli-linux-x64-baseline/-/cli-linux-x64-baseline-2.0.32.tgz -o "$work_dir/opencode.tgz"
