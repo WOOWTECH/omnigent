@@ -1619,7 +1619,12 @@ class HostStore:
         run_write_transaction(self._lifecycle_session, "admit_runner_launch", write)
 
     def delete_host(
-        self, host_id: str, *, keep_if_bound: bool = False, expected_host: Host | None = None
+        self,
+        host_id: str,
+        *,
+        keep_if_bound: bool = False,
+        expected_host: Host | None = None,
+        require_offline: bool = False,
     ) -> Host | None:
         """
         Logically delete a host and retain pending sandbox cleanup.
@@ -1634,7 +1639,12 @@ class HostStore:
         :param keep_if_bound: Preserve the host while any conversation or retained
             task in this workspace remains bound to it, including archived sessions.
         :param expected_host: Refuse deletion if the sandbox generation has changed.
+        :param require_offline: Refuse a live host (see :func:`host_is_live`).
+            Checked under the row lock, so a reconnect cannot land between the
+            check and the delete.
         :returns: The latest host snapshot, or ``None`` when absent or preserved.
+        :raises OmnigentError: ``CONFLICT`` when *require_offline* is set and
+            the host is live.
         """
 
         def write(session: Session) -> Host | None:
@@ -1655,6 +1665,8 @@ class HostStore:
                 return None
             if keep_if_bound and host_has_bindings_in_session(session, row):
                 return None
+            if require_offline and row.deleted_at is None and host_is_live(_row_to_host(row)):
+                raise OmnigentError("host is online", code=ErrorCode.CONFLICT)
             return delete_host_in_session(session, row)
 
         return run_write_transaction(self._lifecycle_session, "delete_host", write)

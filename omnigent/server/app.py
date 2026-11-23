@@ -27,6 +27,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from sqlalchemy.exc import StatementError
+from starlette.datastructures import MutableHeaders
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.gzip import GZipMiddleware
 from starlette.responses import Response
@@ -529,8 +530,9 @@ _WEB_UI_STATIC_CACHE_CONTROL = "public, max-age=3600"
 # FastAPI's built-in docs endpoints (`docs`, `redoc`, `openapi.json`), and the
 # SPA's own static-asset mount (`assets`) — a base path of `/assets` would be
 # indistinguishable from an already-destripped `/assets/<file>` request under a
-# prefix-stripping proxy, double-stripping it into a 404. Doubles as the
-# SPA-fallback allowlist and the base-path collision check (see
+# prefix-stripping proxy, double-stripping it into a 404. Together with
+# `_WEB_UI_ROUTE_PREFIXES`, it also decides whether a static-file miss may use
+# the SPA history fallback; it remains the base-path collision check (see
 # `_normalize_base_path` / `_is_web_ui_api_fallback_path`).
 _WEB_UI_API_FALLBACK_PREFIXES = frozenset(
     {
@@ -567,6 +569,7 @@ _WEB_UI_ROUTE_PREFIXES = frozenset(
         "c",
         "canvas",
         "extensions",
+        "grid",
         "inbox",
         "login",
         "members",
@@ -846,6 +849,32 @@ class _FastAPICallNext(Protocol):
         :returns: Awaitable that resolves to the downstream response.
         """
         ...
+
+
+class _StrictTransportSecurityMiddleware:
+    """Add an HSTS header to every HTTP response.
+
+    Pure ASGI so streaming responses stay unbuffered. Enabled with
+    ``OMNIGENT_PUBLIC_HSTS`` by deployments whose public URL is HTTPS only;
+    it is off by default because plain-HTTP local servers must not send it.
+    """
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        async def send_with_hsts(message: Message) -> None:
+            if message["type"] == "http.response.start":
+                MutableHeaders(scope=message).setdefault(
+                    "Strict-Transport-Security", "max-age=31536000"
+                )
+            await send(message)
+
+        await self.app(scope, receive, send_with_hsts)
 
 
 class _WebSocketMetricsMiddleware:
@@ -1922,6 +1951,7 @@ def create_app(
     proactive_agent: DeploymentGate | None = None,
     proactive_agent_settings_store: ProactiveAgentSettingsStore | None = None,
     memory_store: MemoryStore | None = None,
+    public_api_docs: bool | None = None,
 ) -> FastAPI:
     """
     Build and return the FastAPI application with all routes mounted.
@@ -2108,6 +2138,12 @@ def create_app(
         ``wrong_replica``; otherwise it returns 409 "host is offline". The
         400 names the slice key to resend with, or says to resend without it
         when the request was already keyed to the host.
+    :param public_api_docs: Whether to expose FastAPI's unauthenticated
+        ``/docs``, ``/redoc`` and ``/openapi.json`` routes. ``None`` reads
+        ``OMNIGENT_PUBLIC_API_DOCS`` and defaults to hidden, so a public
+        deployment does not publish its route map. The checked-in
+        ``openapi.json`` (and ``app.openapi()``) remain available to build
+        and SDK tooling either way.
     :returns: A fully configured :class:`FastAPI` application.
     :raises ValueError: If ``permission_store`` is provided
         without an ``auth_provider``.
@@ -2120,6 +2156,13 @@ def create_app(
     # pick it up without threading a kwarg. Empty → root deployment (default).
     resolved_base_path = _normalize_base_path(
         base_path if base_path is not None else os.environ.get("OMNIGENT_WEB_BASE_PATH")
+    )
+    from omnigent.server.auth import env_var_is_truthy
+
+    resolved_public_api_docs = (
+        public_api_docs
+        if public_api_docs is not None
+        else env_var_is_truthy("OMNIGENT_PUBLIC_API_DOCS", default=False)
     )
 
     from omnigent.server.server_config import (
@@ -2570,8 +2613,14 @@ def create_app(
 
         session_pull_requests.install_refresher(pull_request_refresher)
         try:
-            with monitor_event_loop():
-                yield
+            mcp_server = getattr(app_inst.state, "omnigent_mcp_server", None)
+            if mcp_server is None:
+                with monitor_event_loop():
+                    yield
+            else:
+                async with mcp_server.session_manager.run():
+                    with monitor_event_loop():
+                        yield
         finally:
             session_pull_requests.install_refresher(None)
             await pull_request_refresher.aclose()
@@ -2624,7 +2673,13 @@ def create_app(
         else None
     )
 
-    app = FastAPI(title="Omnigent Server", lifespan=_lifespan)
+    app = FastAPI(
+        title="Omnigent Server",
+        lifespan=_lifespan,
+        docs_url="/docs" if resolved_public_api_docs else None,
+        redoc_url="/redoc" if resolved_public_api_docs else None,
+        openapi_url="/openapi.json" if resolved_public_api_docs else None,
+    )
     from omnigent.runtime import telemetry
 
     telemetry.instrument_fastapi_app(app)
@@ -3035,6 +3090,8 @@ def create_app(
     app.state.server_metrics = server_metrics
     app.state.server_metrics_otel = server_metrics_otel
     app.add_middleware(_WebSocketMetricsMiddleware, metrics=server_metrics)
+    if env_var_is_truthy("OMNIGENT_PUBLIC_HSTS", default=False):
+        app.add_middleware(_StrictTransportSecurityMiddleware)
     # CSWSH guard: reject cross-origin WebSocket handshakes before any
     # route accepts them. Added after the metrics middleware so it is the
     # outermost WS middleware — a forbidden origin is closed without even
@@ -3367,6 +3424,15 @@ def create_app(
             error_impact=ErrorImpact.BENIGN.value,
             error_phase=ErrorPhase.REQUEST.value,
         )
+        if request.url.path.rstrip("/").endswith("/v1/admin/mcp-server/profiles"):
+            safe_errors = [
+                {key: error[key] for key in ("type", "loc", "msg")} for error in exc.errors()
+            ]
+            response = await request_validation_exception_handler(
+                request, RequestValidationError(safe_errors)
+            )
+            response.headers["Cache-Control"] = "no-store"
+            return response
         return await request_validation_exception_handler(request, exc)
 
     @app.exception_handler(ConversationNotFoundError)
@@ -5716,6 +5782,7 @@ def create_app(
     # /magic/redeem, /users, /users/{id}/reset, /users/me/password).
     # Must be registered BEFORE the SPA static mount because the SPA's
     # HTML5-history fallback catches all unmatched extensionless paths.
+    mcp_profile_store = None
     if auth_provider is not None and getattr(auth_provider, "login_url", None):
         from omnigent.server.auth import UnifiedAuthProvider
 
@@ -5765,6 +5832,23 @@ def create_app(
                 prefix="/auth",
                 tags=["auth"],
             )
+            if permission_store is not None:
+                from omnigent.server.mcp_profile_store import McpServerProfileStore
+                from omnigent.server.routes.mcp_server_profiles import (
+                    create_mcp_server_profiles_router,
+                )
+
+                mcp_profile_store = McpServerProfileStore(account_store.storage_location)
+                app.include_router(
+                    create_mcp_server_profiles_router(
+                        profile_store=mcp_profile_store,
+                        account_store=account_store,
+                        permission_store=permission_store,
+                        auth_provider=auth_provider,
+                    ),
+                    prefix="/v1",
+                    tags=["mcp server profiles"],
+                )
         elif isinstance(auth_provider, UnifiedAuthProvider):
             from omnigent.server.routes.auth import create_auth_router
 
@@ -5939,6 +6023,23 @@ def create_app(
     for router, prefix, tags in all_extra_routers:
         app.include_router(router, prefix=prefix, tags=[*tags])
 
+    if mcp_profile_store is not None:
+        from omnigent.server.mcp_server import (
+            McpMountPathMiddleware,
+            create_omnigent_mcp_server,
+        )
+
+        omnigent_mcp_server = create_omnigent_mcp_server(
+            app=app,
+            auth_provider=auth_provider,
+        )
+        app.state.omnigent_mcp_server = omnigent_mcp_server
+        app.mount(
+            "/mcp",
+            McpMountPathMiddleware(omnigent_mcp_server.streamable_http_app()),
+            name="omnigent-mcp",
+        )
+
     web_ui_dist = _WEB_UI_DIST
     web_ui_present = web_ui_dist.is_dir() and (web_ui_dist / "index.html").is_file()
     if web_ui_present:
@@ -5970,6 +6071,17 @@ def create_app(
         # Only wired when a base path is configured: a root deployment pays
         # no per-request cost.
         app.add_middleware(BasePathMiddleware, base_path=resolved_base_path)
+    if mcp_profile_store is not None and account_store is not None:
+        from omnigent.server.mcp_server import McpProfilePathMiddleware
+
+        # Added outermost so it can authenticate and scrub the bearer path
+        # before BasePathMiddleware and the server's access logger see it.
+        app.add_middleware(
+            McpProfilePathMiddleware,
+            profile_store=mcp_profile_store,
+            account_store=account_store,
+            base_path=resolved_base_path,
+        )
 
     install_stream_event_schemas(app)
     register_component_models(app, SESSION_CREATE_BODY_MODELS)
@@ -5986,11 +6098,12 @@ class _SPAStaticFiles(StaticFiles):
     for the literal root and directory paths, so a refresh on
     ``/c/abc`` would 404.
 
-    The fallback is gated by an API-prefix and extension check: unmatched
-    ``/v1`` / ``/api`` / ``/auth`` / ``/health`` paths return a JSON 404,
-    and a path with a file extension (``.js``, ``.css``, ``.png``,
-    ``.woff2``, …) returns the static 404 verbatim. Other extensionless
-    paths fall back to ``index.html``.
+    The fallback is gated by the API namespace, a known UI-route prefix, and
+    an extension check: unmatched ``/v1`` / ``/api`` / ``/auth`` / ``/health``
+    paths return a JSON 404, paths outside the UI routes return 404, and a path
+    with a file extension (``.js``, ``.css``, ``.png``, ``.woff2``, …) returns
+    the static 404 verbatim. This keeps hidden paths and arbitrary probes from
+    receiving the SPA shell as a successful response.
 
     The HTML shell is rebased for the deployment ``base_path`` once at
     startup (see :func:`_rewrite_web_ui_index`) and served from memory with
@@ -6060,7 +6173,11 @@ class _SPAStaticFiles(StaticFiles):
                         }
                     },
                 )
-            if exc.status_code == 404 and "." not in path.rsplit("/", 1)[-1]:
+            if (
+                exc.status_code == 404
+                and "." not in path.rsplit("/", 1)[-1]
+                and _is_web_ui_history_fallback_path(path)
+            ):
                 served_path = "index.html"
                 response = (
                     self._shell_response(scope)
@@ -6087,6 +6204,24 @@ def _is_web_ui_api_fallback_path(path: str) -> bool:
     """
     first_segment = path.lstrip("/").split("/", 1)[0]
     return first_segment in _WEB_UI_API_FALLBACK_PREFIXES
+
+
+def _is_web_ui_history_fallback_path(path: str) -> bool:
+    """Return whether a missing path is a valid SPA navigation target.
+
+    Static assets are resolved before this predicate. A miss may receive the
+    HTML shell only when it starts with a route implemented by ``web/src/App``.
+    Dot-prefixed path components are never UI routes, so they stay 404 even if
+    a prefix otherwise happens to match.
+
+    :param path: Static mount-relative path, e.g. ``"c/conv_abc123"``.
+    :returns: True when the miss may fall back to ``index.html``.
+    """
+    segments = tuple(segment for segment in path.split("/") if segment)
+    return not segments or (
+        segments[0] in _WEB_UI_ROUTE_PREFIXES
+        and not any(segment.startswith(".") for segment in segments)
+    )
 
 
 class _RangeAwareGZipMiddleware(GZipMiddleware):

@@ -1,0 +1,41 @@
+# syntax=docker/dockerfile:1
+# Both server variants consume the exact portable wheel produced from source S.
+# Override BASE_IMAGE with the pinned generic-server index for Podman.
+ARG BASE_IMAGE=ghcr.io/omnigent-ai/omnigent-server-kubernetes:v0.21.0@sha256:d83a3dce03e2cd2e3e1a8cdf8b20d9696838dcbfbc6ceee3cabe5fbc0c23b657
+FROM ${BASE_IMAGE}
+ARG SOURCE_COMMIT
+ARG WHEEL_SHA256
+ARG IMAGE_VARIANT=server-kubernetes
+ARG BASE_IMAGE
+LABEL org.opencontainers.image.source="https://github.com/WOOWTECH/omnigent" \
+      org.opencontainers.image.revision="${SOURCE_COMMIT}" \
+      io.woowtech.omnigent.wheel-sha256="${WHEEL_SHA256}" \
+      io.woowtech.omnigent.base-image="${BASE_IMAGE}" \
+      io.woowtech.omnigent.variant="${IMAGE_VARIANT}"
+
+COPY deploy/docker/woowtech-runtime-security.sh deploy/docker/woowtech-pip-security.txt /build/
+RUN sh /build/woowtech-runtime-security.sh
+
+# 換檔前先確認 image 內的原檔就是 git tag v0.21.0 的版本，overlay 才只帶這次的 diff。
+RUN printf '%s\n' \
+      '64a1ee122005bc65c99d4fd8271fe0426a338902eaed9bb70a3c5d10e2524f11  /build/omnigent/server/routes/_sessions/orchestration.py' \
+      '535e8bd4bac35dc3555fc0b84e0e89fb2d70175229db4db37b9a12229eb4c99a  /build/omnigent/server/app.py' \
+      '92b2e4a0d5ccaedff88e482586d313648584a0dcc35a2a7191007d53c7778d2d  /build/omnigent/server/routes/hosts.py' \
+      '6c38aa66c27d4cdbc3f4b6bc866823a51bc8a0b00b18c42c461f4b038be5942a  /build/omnigent/server/routes/_gzip_route.py' \
+      '2372d5767c3a7895295178302f8993b5bb5fdda089c33116bc73b369aea4ac15  /build/omnigent/stores/host_store.py' \
+    | sha256sum -c -
+RUN test -f /build/omnigent/server/static/web-ui/index.html
+
+# A named context prevents a Docker build from silently rebuilding another wheel/UI.
+COPY --from=mcp-artifact / /opt/woow-artifact/
+COPY scripts/woowtech_mcp_artifact.py /opt/woow-artifact/verify.py
+RUN test -n "$SOURCE_COMMIT" && test -n "$WHEEL_SHA256" \
+ && printf '%s  %s\n' "$WHEEL_SHA256" /opt/woow-artifact/omnigent-0.21.0-py3-none-any.whl | sha256sum -c - \
+ && /opt/venv/bin/python /opt/woow-artifact/verify.py verify \
+      --artifact /opt/woow-artifact --source-commit "$SOURCE_COMMIT" \
+ && /opt/venv/bin/python -m pip install --no-deps --no-index --force-reinstall \
+      /opt/woow-artifact/omnigent-0.21.0-py3-none-any.whl \
+ && rm -rf /build/omnigent /build/omnigent.egg-info \
+ && /opt/venv/bin/python /opt/woow-artifact/verify.py runtime \
+      --artifact /opt/woow-artifact --source-commit "$SOURCE_COMMIT" --debian-security \
+      --image-variant "$IMAGE_VARIANT"

@@ -884,3 +884,28 @@ def create_accounts_auth_router(
 # verify against a real stored hash, so an attacker can't use
 # response latency to enumerate valid usernames.
 _DUMMY_HASH = hash_password("__dummy_for_timing_equalization__")
+
+
+def verify_account_password(
+    account_store: SqlAlchemyAccountStore,
+    username: str,
+    password: str,
+) -> str | None:
+    """Verify an existing account password and return its current generation.
+
+    Missing users take the same Argon2 path as bad passwords. This helper is
+    used by admin-created MCP profiles and never changes login/session state.
+    """
+    normalized = username.strip().lower()
+    password_hash, generation = account_store.login_snapshot(normalized)
+    if password_hash is None:
+        with contextlib.suppress(InvalidPasswordError):
+            verify_password(password, _DUMMY_HASH)
+        return None
+    try:
+        verify_password(password, password_hash)
+    except InvalidPasswordError:
+        return None
+    if generation is None or not account_store.accepts_generation(normalized, generation):
+        return None
+    return generation

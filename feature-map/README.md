@@ -180,6 +180,9 @@ user-visible behavior. It then uses exactly these four H2 sections in order:
   desktop and mobile profile selection, and the boundary between browser
   request proof and live resource/network enforcement.
 
+- [Omnigent MCP server](./omnigent-mcp-server.md) covers admin-managed account
+  profiles, one-time bearer URLs, revocation and external session/automation tools.
+
 - [GitLab merge requests](./gitlab.md) covers the shared MR panel, composer,
   Canvas links, and native tracking.
 

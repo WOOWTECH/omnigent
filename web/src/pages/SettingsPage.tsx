@@ -385,6 +385,9 @@ const SharingPage = lazy(() =>
 const AdminGeneralPage = lazy(() =>
   import("@/pages/AdminGeneralPage").then((m) => ({ default: m.AdminGeneralPage })),
 );
+const McpServerPage = lazy(() =>
+  import("@/pages/McpServerPage").then((m) => ({ default: m.McpServerPage })),
+);
 
 /**
  * Settings content panel. The section nav lives in the sidebar card
@@ -404,18 +407,21 @@ export function SettingsPage() {
   // `section` is a closed SettingsSectionId union (no PII / unbounded values).
   useOmnigentPageView(`settings.${section}`);
 
-  // Members / Policies are admin-only management surfaces that own their full
-  // layout (their own PageScroll + admin gating), so they render directly —
+  // Admin management surfaces own their full layout (their own PageScroll +
+  // access gating), so they render directly —
   // NOT inside the shared section PageScroll below, which would nest two
   // scroll containers. Both self-gate to admins server-side and client-side.
   // Rendered in ANY multi-user mode (accounts AND OIDC), not gated on
   // `accountsEnabled` — the nav + pages handle admin gating, and Members runs
-  // read-only under OIDC (no password actions).
+  // read-only under OIDC (no password actions). MCP profile management is
+  // accounts-only because it verifies account passwords; useSettingsRoute
+  // prevents opening it on other auth providers.
   if (
     section === "admin" ||
     section === "members" ||
     section === "policies" ||
-    section === "sharing"
+    section === "sharing" ||
+    section === "mcp-server"
   ) {
     return (
       <Suspense fallback={null}>
@@ -425,6 +431,8 @@ export function SettingsPage() {
           <MembersPage />
         ) : section === "policies" ? (
           <PoliciesPage />
+        ) : section === "mcp-server" ? (
+          <McpServerPage />
         ) : (
           <SharingPage />
         )}

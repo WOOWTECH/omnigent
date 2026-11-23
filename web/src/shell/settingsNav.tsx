@@ -15,6 +15,7 @@ import {
   DownloadIcon,
   GitBranchIcon,
   KeyboardIcon,
+  KeyRoundIcon,
   PaletteIcon,
   PlugIcon,
   SettingsIcon,
@@ -53,6 +54,7 @@ export type SettingsSectionId =
   | "members"
   | "policies"
   | "sharing"
+  | "mcp-server"
   | "archived"
   | "cli"
   | "updates";
@@ -72,6 +74,7 @@ const SECTION_IDS: readonly SettingsSectionId[] = [
   "members",
   "policies",
   "sharing",
+  "mcp-server",
   "archived",
   "cli",
   "updates",
@@ -101,9 +104,11 @@ interface SettingsNavGroup {
  * exists), so an SSO user can see who they're signed in as and sign out; it's
  * absent only in header single-user mode. The Admin group (Members / Policies)
  * appears for admins in ANY multi-user mode since both accounts and OIDC share
- * the `users.is_admin` flag and the server enforces admin on every route; the
- * Desktop group (Local CLI) appears only in the Electron shell. Harnesses is
- * left out when the deployment curated out every harness.
+ * the `users.is_admin` flag and the server enforces admin on every route;
+ * Omnigent MCP is additionally limited to accounts mode because profile
+ * creation verifies an account password. The Desktop group (Local CLI) appears
+ * only in the Electron shell. Harnesses is left out when the deployment curated
+ * out every harness.
  */
 export function settingsNavGroups(
   hasAuthSession: boolean,
@@ -115,6 +120,7 @@ export function settingsNavGroups(
   mcpEnabled = false,
   adminGeneralEnabled = false,
   harnessesOffered = true,
+  accountsEnabled = false,
 ): SettingsNavGroup[] {
   const harnesses: SettingsNavItem = {
     id: "harnesses",
@@ -178,6 +184,11 @@ export function settingsNavGroups(
     if (!isSingleUser) adminItems.push({ id: "members", label: "Members", icon: UsersIcon });
     adminItems.push({ id: "policies", label: "Policies", icon: ShieldCheckIcon });
     if (!isSingleUser) adminItems.push({ id: "sharing", label: "Sharing", icon: Share2Icon });
+    // MCP profiles require built-in accounts auth because they verify a
+    // password during linking.
+    if (accountsEnabled) {
+      adminItems.push({ id: "mcp-server", label: "Omnigent MCP", icon: KeyRoundIcon });
+    }
   }
   if (adminItems.length > 0) groups.push({ title: "Admin", items: adminItems });
   groups.push({
@@ -218,6 +229,7 @@ export function useSettingsRoute(): {
     (SECTION_IDS as readonly string[]).includes(next) &&
     !(singleUser && (next === "members" || next === "sharing")) &&
     !(next === "admin" && !adminGeneralSettingsAvailable(info)) &&
+    !(next === "mcp-server" && info !== "loading" && !info.accounts_enabled) &&
     !(next === "custom-agents" && !customAgentsSettingsEnabled(info));
   const section = isValidSection ? (next as SettingsSectionId) : defaultSection;
   const harness = section === "harnesses" ? segments[idx + 2] : undefined;
@@ -286,6 +298,7 @@ export function SettingsSidebarBody({
     mcpEnabled,
     adminGeneralSettingsAvailable(info),
     harnessesOffered,
+    info !== "loading" && info.accounts_enabled,
   );
 
   return (

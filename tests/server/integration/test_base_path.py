@@ -300,6 +300,37 @@ async def test_root_deployment_unchanged_without_base_path(
     assert "__OMNIGENT_BASE_PATH__" not in root.text
 
 
+@pytest.mark.parametrize("base_path", [None, "/proxy/6767"])
+async def test_deep_links_keep_shell_while_docs_and_probes_404(
+    runtime_init: None,
+    db_uri: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    base_path: str | None,
+) -> None:
+    """UI deep links still serve the shell; default-hidden docs and probes 404."""
+    monkeypatch.setattr(app_module, "_WEB_UI_DIST", _make_web_ui(tmp_path))
+    monkeypatch.delenv("OMNIGENT_PUBLIC_API_DOCS", raising=False)
+    app = _make_app(db_uri, tmp_path, base_path)
+    prefix = base_path or ""
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        deep_links = [
+            await client.get(prefix + path)
+            for path in ("/c/session_123", "/settings/general", "/extensions/demo/page")
+        ]
+        probes = [
+            await client.get(prefix + path) for path in ("/docs", "/openapi.json", "/wp-admin")
+        ]
+
+    for response in deep_links:
+        assert response.status_code == 200, response.url
+        assert "<div id='root'>" in response.text
+    for response in probes:
+        assert response.status_code == 404, response.url
+        assert "<div id='root'>" not in response.text
+
+
 async def test_base_path_read_from_env(
     runtime_init: None,
     db_uri: str,

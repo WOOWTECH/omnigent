@@ -862,6 +862,105 @@ async def test_handle_model_options_codex_probe_failure_is_failed(
     _cleanup_host(host)
 
 
+@pytest.fixture
+def _fresh_opencode_model_cache(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Each test sees an empty host-side OpenCode model cache."""
+    from omnigent.harnesses.opencode_native import app_server as opencode_app_server
+
+    monkeypatch.setattr(opencode_app_server, "_cli_model_options_cache", {})
+
+
+@pytest.mark.usefixtures("_fresh_opencode_model_cache")
+@pytest.mark.parametrize("harness", ["opencode-native", "native-opencode"])
+async def test_handle_model_options_serves_the_opencode_cli_catalog(
+    monkeypatch: pytest.MonkeyPatch, harness: str
+) -> None:
+    """OpenCode 2.x 的 launch picker 用 host 上 `opencode models --standalone` 的清單。"""
+    from omnigent.harnesses.opencode_native import app_server as opencode_app_server
+
+    monkeypatch.setattr(opencode_app_server, "find_opencode_cli", lambda *_a: "/bin/opencode")
+    monkeypatch.setattr(opencode_app_server, "resolve_opencode_version", lambda _cli: "2.0.32")
+    run = Mock(
+        return_value=SimpleNamespace(
+            returncode=0, stdout="anthropic/claude-sonnet-4-5\nopenai/gpt-5\n", stderr=""
+        )
+    )
+    monkeypatch.setattr(
+        opencode_app_server,
+        "subprocess",
+        SimpleNamespace(
+            run=run,
+            DEVNULL=subprocess.DEVNULL,
+            SubprocessError=subprocess.SubprocessError,
+        ),
+    )
+    monkeypatch.setattr(
+        "omnigent.host.connect._model_configuration_source_for_harness", lambda harness: None
+    )
+    host = _make_host_process()
+
+    result = await host._handle_model_options(
+        HostModelOptionsFrame(request_id="req_opencode", harness=harness),
+    )
+
+    assert result.status == "ok"
+    assert [model["id"] for model in result.models] == [
+        "anthropic/claude-sonnet-4-5",
+        "openai/gpt-5",
+    ]
+    # --standalone：不連、也不拉起 OpenCode 2.x 常駐的 background service。
+    assert run.call_args.args[0] == ["/bin/opencode", "models", "--standalone"]
+    assert run.call_args.kwargs["stdin"] is subprocess.DEVNULL
+
+
+@pytest.mark.usefixtures("_fresh_opencode_model_cache")
+async def test_handle_model_options_missing_opencode_is_failed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """沒裝 opencode CLI 時回 failed 並帶安裝提示，不產生假清單。"""
+    from omnigent.harnesses.opencode_native import app_server as opencode_app_server
+
+    def _missing(*_args: object) -> str:
+        raise opencode_app_server.OpenCodeCliNotFoundError("opencode CLI not found on PATH")
+
+    monkeypatch.setattr(opencode_app_server, "find_opencode_cli", _missing)
+    host = _make_host_process()
+
+    result = await host._handle_model_options(
+        HostModelOptionsFrame(request_id="req_opencode", harness="opencode-native"),
+    )
+
+    assert result == HostModelOptionsResultFrame(
+        request_id="req_opencode",
+        status="failed",
+        error="opencode CLI not found on PATH",
+    )
+
+
+@pytest.mark.usefixtures("_fresh_opencode_model_cache")
+async def test_handle_model_options_old_opencode_is_failed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """host 上還是 OpenCode 1.x 時回 failed 並說明版本範圍，不跑 `opencode models`。"""
+    from omnigent.harnesses.opencode_native import app_server as opencode_app_server
+
+    monkeypatch.delenv("OMNIGENT_OPENCODE_SKIP_VERSION_CHECK", raising=False)
+    monkeypatch.setattr(opencode_app_server, "find_opencode_cli", lambda *_a: "/bin/opencode")
+    monkeypatch.setattr(opencode_app_server, "resolve_opencode_version", lambda _cli: "1.18.35")
+    run = Mock()
+    monkeypatch.setattr(opencode_app_server, "subprocess", SimpleNamespace(run=run))
+    host = _make_host_process()
+
+    result = await host._handle_model_options(
+        HostModelOptionsFrame(request_id="req_opencode", harness="opencode-native"),
+    )
+
+    assert result.status == "failed"
+    assert result.error is not None
+    assert "Unsupported OpenCode version 1.18.35" in result.error
+    run.assert_not_called()
+
+
 async def test_handle_model_options_rejects_unsupported_harness() -> None:
     """Only launch paths with host-resolved model catalogs are accepted."""
     host = _make_host_process()
