@@ -24,7 +24,8 @@ def candidate_tag(
     require(run_id.isdigit() and attempt.isdigit(), "Need numeric CI run and attempt")
     require(arch is None or arch in ("amd64", "arm64"), "Unknown architecture")
     suffix = f"-{arch}" if arch else ""
-    return f"{PUBLIC_IMAGE}:{CORE_VERSION}-mcp.1-{variant}-sha-{source}-run-{run_id}-{attempt}{suffix}"
+    build = f"{CORE_VERSION}-mcp.1-{variant}"
+    return f"{PUBLIC_IMAGE}:{build}-sha-{source}-run-{run_id}-{attempt}{suffix}"
 
 
 def digest_from_manifest(manifest: dict) -> str:

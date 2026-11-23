@@ -68,7 +68,10 @@ def test_normalization_is_repeatable_and_keeps_valid_record(tmp_path: Path) -> N
     assert artifact.verify(directory, "a" * 40)[0] == receipt
     payload = artifact.wheel_payload(directory / artifact.WHEEL)
     assert b"1700000000" in payload["omnigent/_build_info.py"]
-    assert payload[f"omnigent-{artifact.CORE_VERSION}.dist-info/RECORD"].count(b",sha256=") == len(payload) - 1
+    assert (
+        payload[f"omnigent-{artifact.CORE_VERSION}.dist-info/RECORD"].count(b",sha256=")
+        == len(payload) - 1
+    )
 
 
 @pytest.mark.parametrize("failure", ["wheel", "manifest", "source", "snapshot"])
@@ -124,7 +127,8 @@ def test_architecture_receipts_reject_mixed_identity(images, variant: str, failu
         "wheelSha256": "b" * 64,
         "uiSha256": "c" * 64,
         "contentSha256": "d" * 64,
-        "baseImage": f"ghcr.io/omnigent-ai/omnigent-{variant}:v{artifact.CORE_VERSION}@sha256:" + "e" * 64,
+        "baseImage": f"ghcr.io/omnigent-ai/omnigent-{variant}:v{artifact.CORE_VERSION}@sha256:"
+        + "e" * 64,
         "runId": "1",
         "runAttempt": "1",
     }

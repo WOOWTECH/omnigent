@@ -58,7 +58,9 @@ def test_upgrade_from_released_base_reaches_both_schemas(
         tables = set(sa.inspect(engine).get_table_names())
         assert {"memories", "inbox_items", "workflows", "scheduled_task_shares"} <= tables
         with engine.connect() as conn:
-            versions = {row[0] for row in conn.execute(sa.text("SELECT version_num FROM alembic_version"))}
+            versions = {
+                row[0] for row in conn.execute(sa.text("SELECT version_num FROM alembic_version"))
+            }
         assert versions == {_HEAD}
     finally:
         engine.dispose()
