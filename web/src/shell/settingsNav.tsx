@@ -29,7 +29,11 @@ import {
 import { Link, useLocation } from "@/lib/routing";
 import { Button } from "@/components/ui/button";
 import { useServerInfo } from "@/lib/CapabilitiesContext";
-import { customAgentsSettingsEnabled, isSingleUserMode } from "@/lib/capabilities";
+import {
+  adminGeneralSettingsAvailable,
+  customAgentsSettingsEnabled,
+  isSingleUserMode,
+} from "@/lib/capabilities";
 import { useIsAdmin } from "@/hooks/useIsAdmin";
 import { isElectronShell } from "@/lib/nativeBridge";
 import { cn } from "@/lib/utils";
@@ -46,6 +50,7 @@ export type SettingsSectionId =
   | "shortcuts"
   | "import"
   | "account"
+  | "admin"
   | "members"
   | "policies"
   | "sharing"
@@ -65,6 +70,7 @@ const SECTION_IDS: readonly SettingsSectionId[] = [
   "shortcuts",
   "import",
   "account",
+  "admin",
   "members",
   "policies",
   "sharing",
@@ -73,6 +79,11 @@ const SECTION_IDS: readonly SettingsSectionId[] = [
   "cli",
   "updates",
 ];
+
+/** Where a section lives; the sidebar link and its ⌘K command both go here. */
+export function settingsSectionPath(id: SettingsSectionId): string {
+  return `/settings/${id}`;
+}
 
 interface SettingsNavItem {
   id: SettingsSectionId;
@@ -91,10 +102,13 @@ interface SettingsNavGroup {
  * Nav groups for the current deploy. The Account section appears whenever the
  * deploy has a login session (accounts OR OIDC/SSO — i.e. a `login_url`
  * exists), so an SSO user can see who they're signed in as and sign out; it's
- * absent only in header single-user mode. The Admin group appears for admins
- * in accounts and OIDC modes; Omnigent MCP is additionally limited to accounts
- * mode because profile creation verifies an account password. The Desktop
- * group (Local CLI) appears only in the Electron shell.
+ * absent only in header single-user mode. The Admin group (Members / Policies)
+ * appears for admins in ANY multi-user mode since both accounts and OIDC share
+ * the `users.is_admin` flag and the server enforces admin on every route;
+ * Omnigent MCP is additionally limited to accounts mode because profile
+ * creation verifies an account password. The Desktop group (Local CLI) appears
+ * only in the Electron shell. Harnesses is left out when the deployment curated
+ * out every harness.
  */
 export function settingsNavGroups(
   hasAuthSession: boolean,
@@ -104,6 +118,8 @@ export function settingsNavGroups(
   integrationsEnabled = false,
   customAgentsEnabled = false,
   mcpEnabled = false,
+  adminGeneralEnabled = false,
+  harnessesOffered = true,
   accountsEnabled = false,
 ): SettingsNavGroup[] {
   const harnesses: SettingsNavItem = {
@@ -118,7 +134,7 @@ export function settingsNavGroups(
     { id: "shortcuts", label: "Keyboard shortcuts", icon: KeyboardIcon, hideOnMobile: true },
     { id: "import", label: "Import sessions", icon: DownloadIcon },
   ];
-  if (!customAgentsEnabled) general.splice(2, 0, harnesses);
+  if (!customAgentsEnabled && harnessesOffered) general.splice(2, 0, harnesses);
   // Provider credentials and MCP accounts have separate settings pages.
   if (integrationsEnabled) {
     general.splice(2, 0, {
@@ -139,7 +155,10 @@ export function settingsNavGroups(
   if (customAgentsEnabled) {
     groups.push({
       title: "Customize",
-      items: [harnesses, { id: "custom-agents", label: "Custom agents", icon: BotIcon }],
+      items: [
+        ...(harnessesOffered ? [harnesses] : []),
+        { id: "custom-agents", label: "Custom agents", icon: BotIcon },
+      ],
     });
   }
   // Keep shell-specific settings directly after the cross-platform preferences.
@@ -152,26 +171,26 @@ export function settingsNavGroups(
       ],
     });
   }
-  // Admin: server-wide management, admin-only. Nested here as sub-categories
-  // (rather than links out of the Account section) so entering them stays
-  // inside /settings — the sidebar keeps the settings nav instead of snapping
-  // back to the conversation list. Members and Policies also appear under
-  // OIDC/SSO; MCP profiles require built-in accounts auth because they verify
-  // a password during linking.
+  // Single-user servers permit these settings without an admin identity.
+  const adminItems: SettingsNavItem[] = [];
+  if ((isAdmin || isSingleUser) && adminGeneralEnabled) {
+    adminItems.push({ id: "admin", label: "General", icon: SettingsIcon });
+  }
   if (isAdmin) {
     // Members (manage other accounts) and Sharing (grant sessions to other
     // users) have no meaning in single-user mode — there are no other users —
     // so drop both from the nav there. Policies stays: global policies apply
     // to a solo user's own sessions too.
-    const adminItems: SettingsNavItem[] = [];
     if (!isSingleUser) adminItems.push({ id: "members", label: "Members", icon: UsersIcon });
     adminItems.push({ id: "policies", label: "Policies", icon: ShieldCheckIcon });
     if (!isSingleUser) adminItems.push({ id: "sharing", label: "Sharing", icon: Share2Icon });
+    // MCP profiles require built-in accounts auth because they verify a
+    // password during linking.
     if (accountsEnabled) {
       adminItems.push({ id: "mcp-server", label: "Omnigent MCP", icon: KeyRoundIcon });
     }
-    groups.push({ title: "Admin", items: adminItems });
   }
+  if (adminItems.length > 0) groups.push({ title: "Admin", items: adminItems });
   groups.push({
     title: "Archived",
     items: [{ id: "archived", label: "Archived sessions", icon: ArchiveIcon }],
@@ -209,6 +228,7 @@ export function useSettingsRoute(): {
   const isValidSection =
     (SECTION_IDS as readonly string[]).includes(next) &&
     !(singleUser && (next === "members" || next === "sharing")) &&
+    !(next === "admin" && !adminGeneralSettingsAvailable(info)) &&
     !(next === "mcp-server" && info !== "loading" && !info.accounts_enabled) &&
     !(next === "custom-agents" && !customAgentsSettingsEnabled(info));
   const section = isValidSection ? (next as SettingsSectionId) : defaultSection;
@@ -251,8 +271,11 @@ export function useTrackSettingsReturn(): void {
  */
 export function SettingsSidebarBody({
   onNavClick,
+  harnessesOffered = true,
 }: {
   onNavClick: (e: React.MouseEvent<HTMLAnchorElement>) => void;
+  /** False when the deployment curated out every harness, which drops Harnesses. */
+  harnessesOffered?: boolean;
 }) {
   const info = useServerInfo();
   // Account section shows whenever there's a login session (accounts OR OIDC).
@@ -273,6 +296,8 @@ export function SettingsSidebarBody({
     integrationsEnabled,
     customAgentsSettingsEnabled(info),
     mcpEnabled,
+    adminGeneralSettingsAvailable(info),
+    harnessesOffered,
     info !== "loading" && info.accounts_enabled,
   );
 
@@ -328,7 +353,7 @@ export function SettingsSidebarBody({
                     )}
                   >
                     <Link
-                      to={`/settings/${item.id}`}
+                      to={settingsSectionPath(item.id)}
                       onClick={onNavClick}
                       data-testid={`settings-nav-${item.id}`}
                       componentId={`settings.nav.${item.id}`}

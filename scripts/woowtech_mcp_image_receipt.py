@@ -13,6 +13,7 @@ from woowtech_mcp_artifact import require, verify, write_json
 
 PUBLIC_IMAGE = "ghcr.io/woowtech/omnigent-server-kubernetes"
 VARIANTS = ("server", "server-kubernetes")
+CORE_VERSION = "0.23.0"
 
 
 def candidate_tag(
@@ -23,7 +24,8 @@ def candidate_tag(
     require(run_id.isdigit() and attempt.isdigit(), "Need numeric CI run and attempt")
     require(arch is None or arch in ("amd64", "arm64"), "Unknown architecture")
     suffix = f"-{arch}" if arch else ""
-    return f"{PUBLIC_IMAGE}:0.21.0-mcp.1-{variant}-sha-{source}-run-{run_id}-{attempt}{suffix}"
+    build = f"{CORE_VERSION}-mcp.1-{variant}"
+    return f"{PUBLIC_IMAGE}:{build}-sha-{source}-run-{run_id}-{attempt}{suffix}"
 
 
 def digest_from_manifest(manifest: dict) -> str:
@@ -85,7 +87,8 @@ def validate_architectures(receipts: list[dict], source_commit: str, variant: st
             re.fullmatch(
                 r"ghcr.io/omnigent-ai/omnigent-"
                 + re.escape(variant)
-                + r":v0.21.0@sha256:[0-9a-f]{64}",
+                + re.escape(f":v{CORE_VERSION}@sha256:")
+                + r"[0-9a-f]{64}",
                 receipt["baseImage"],
             )
             is not None,

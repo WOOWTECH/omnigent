@@ -42,8 +42,10 @@ import {
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
 } from "react";
 import { useViewerId } from "@/hooks/useViewerId";
+import { useProactiveAgentSettings } from "@/hooks/useProactiveAgentSettings";
 import {
   ArchiveRestoreIcon,
   AlertTriangleIcon,
@@ -53,8 +55,12 @@ import {
   FilesIcon,
   GitPullRequestIcon,
   KeyRoundIcon,
+  ListChecksIcon,
   Loader2Icon,
   LogOutIcon,
+  EyeIcon,
+  EyeOffIcon,
+  FoldVerticalIcon,
   MessagesSquareIcon,
   MinusIcon,
   MonitorIcon,
@@ -77,6 +83,45 @@ import { useTheme } from "next-themes";
 import { PageScroll } from "@/components/PageScroll";
 import { SettingsGroup } from "@/components/SettingsGroup";
 import { SettingsLabel } from "@/components/SettingsLabel";
+import { ProactiveAgentSettingControl } from "@/components/ProactiveAgentSettingControl";
+import { LOCAL_CLI_ENTRY } from "@/pages/settings/search/catalog/cli";
+import {
+  CHECK_FOR_UPDATES_ENTRY,
+  INSTALL_UPDATES_ON_QUIT_ENTRY,
+  UPDATE_MODE_ENTRY,
+  UPDATE_MODE_LABELS,
+} from "@/pages/settings/search/catalog/updates";
+import { SettingsEntryLabel, SettingsItem } from "@/pages/settings/search/SettingsItem";
+import {
+  settingsControlProps,
+  settingsDescriptionId,
+  settingsLabelId,
+} from "@/pages/settings/search/settingsControl";
+import {
+  ARCHIVED_RETENTION_OPTIONS,
+  ARCHIVED_SESSIONS_ENTRY,
+} from "@/pages/settings/search/catalog/archived";
+import {
+  SettingsDataRegion,
+  settingsOverlayProps,
+  settingsRowOverlayProps,
+  settingsRuntimeChoiceProps,
+} from "@/pages/settings/search/settingsOwnership";
+import { MCP_SERVICES_ENTRY } from "@/pages/settings/search/catalog/mcp";
+import {
+  ACCOUNT_PASSWORD_ENTRY,
+  ACCOUNT_SIGN_OUT_ENTRY,
+} from "@/pages/settings/search/catalog/account";
+import {
+  ALWAYS_USE_WORKTREE_ENTRY,
+  DEFAULT_BASE_BRANCH_ENTRY,
+  DELETE_WORKTREES_ON_ARCHIVE_ENTRY,
+} from "@/pages/settings/search/catalog/git";
+import {
+  DATABRICKS_CONNECTION_ENTRY,
+  GITHUB_CONNECTION_ENTRY,
+} from "@/pages/settings/search/catalog/integrations";
+import { SessionTitleInstructionsControl } from "@/components/SessionTitleInstructionsControl";
 import { McpRegistryConnections } from "@/components/McpRegistry";
 import { ThemeColorPicker } from "@/components/theme/ThemeColorPicker";
 import { CardRadioGroup } from "@/components/theme/CardRadioGroup";
@@ -85,6 +130,7 @@ import { PaletteChip, PaletteSwatchPreview } from "@/components/theme/Appearance
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
+import { BrowserAgentToolsSettingsGroup } from "@/components/BrowserPane/agentTools/BrowserAgentToolsSettingsGroup";
 import {
   Select,
   SelectContent,
@@ -104,8 +150,7 @@ import {
 } from "@/components/ui/dialog";
 import { ALT_KEY, MOD_KEY } from "@/components/KeyboardShortcut";
 import { KeyboardShortcutsList } from "@/components/KeyboardShortcutsDialog";
-import { changePassword, logout } from "@/lib/accountsApi";
-import { withBasePath } from "@/lib/basePath";
+import { changePassword, signOutOfBrowserSession } from "@/lib/accountsApi";
 import {
   beginGithubConnect,
   disconnectGithub,
@@ -118,8 +163,15 @@ import {
   fetchDatabricksStatus,
   type DatabricksConnectionStatus,
 } from "@/lib/databricksIntegration";
-import { getCurrentIsAdmin, resolveIdentity } from "@/lib/identity";
+import {
+  getCurrentIsAdmin,
+  getCurrentAdminEligibility,
+  resolveIdentity,
+  subscribeIdentity,
+} from "@/lib/identity";
+import { isAdminViewEnabled, setAdminViewEnabled } from "@/lib/adminView";
 import { useServerInfo } from "@/lib/CapabilitiesContext";
+import { isBootFallbackInfo } from "@/lib/bootCapabilities";
 import { useOmnigentAnalytics, useOmnigentPageView } from "@/lib/analytics";
 import {
   type Conversation,
@@ -142,8 +194,8 @@ import {
   applyStoredUiFontSize,
   applyUiFontFamily,
   clampUiFontSizePx,
+  readAppliedUiFontSizePx,
   readUiFontFamily,
-  readUiFontSizePx,
   UI_FONT_FAMILY_DEFAULT,
   UI_FONT_SIZE_MAX,
   UI_FONT_SIZE_MIN,
@@ -170,6 +222,11 @@ import {
   writeCodeFontWeight,
 } from "@/lib/codeFontPreferences";
 import {
+  CODE_BLOCK_WORD_WRAP_STORAGE_KEY,
+  DEFAULT_CODE_BLOCK_WORD_WRAP,
+  writeCodeBlockWordWrap,
+} from "@/lib/codeWrapPreferences";
+import {
   readTerminalThemeMode,
   TERMINAL_THEME_DEFAULT,
   writeTerminalThemeMode,
@@ -195,11 +252,36 @@ import {
   type TranscriptViewDefault,
 } from "@/lib/transcriptViewPreferences";
 import {
+  DEFAULT_PEER_SESSION_MESSAGE_DISPLAY,
+  usePeerSessionMessageDisplay,
+  writePeerSessionMessageDisplay,
+  type PeerSessionMessageDisplay,
+} from "@/lib/peerSessionMessagePreferences";
+import {
   DEFAULT_FOLD_ASSISTANT_NARRATION,
   FOLD_ASSISTANT_NARRATION_STORAGE_KEY,
   useFoldAssistantNarration,
   writeFoldAssistantNarration,
 } from "@/lib/foldNarrationPreferences";
+import {
+  DEFAULT_PROJECT_FOLDER_COLLAPSE,
+  parseProjectFolderPageSize,
+  PROJECT_FOLDER_COLLAPSE_STORAGE_KEY,
+  PROJECT_FOLDER_PAGE_SIZE,
+  PROJECT_FOLDER_PAGE_SIZE_MAX,
+  PROJECT_FOLDER_PAGE_SIZE_MIN,
+  PROJECT_FOLDER_PAGE_SIZE_STORAGE_KEY,
+  useProjectFolderCollapse,
+  useProjectFolderPageSize,
+  writeProjectFolderCollapse,
+  writeProjectFolderPageSize,
+} from "@/lib/projectFolderPaginationPreferences";
+import {
+  DEFAULT_SESSION_ROW_QUICK_ACTIONS,
+  SESSION_ROW_QUICK_ACTIONS_STORAGE_KEY,
+  useSessionRowQuickActions,
+  writeSessionRowQuickActions,
+} from "@/lib/sessionRowQuickActionsPreferences";
 import {
   DEFAULT_WORKSPACE_TAB,
   defaultWorkspaceTabs,
@@ -258,7 +340,7 @@ import {
   writeCustomTheme,
 } from "@/lib/customTheme";
 import { useHostTheme } from "@/lib/embedded";
-import { getOmnigentThemeSettingsUrl } from "@/lib/host";
+import { getOmnigentThemeSettingsUrl, isDatabricksWorkspace } from "@/lib/host";
 import {
   applyImportedSettings,
   collectSettings,
@@ -271,11 +353,13 @@ import {
   isElectronShell,
   resetCliPath,
   supportsBrowser,
+  supportsGlobalShortcut,
   type UpdateConfig,
   type UpdateMode,
   updateBridge,
 } from "@/lib/nativeBridge";
 import { readOpenLinksInApp, writeOpenLinksInApp } from "@/lib/linkOpenPreferences";
+import { PROACTIVE_AGENT_DISPLAY_NAME } from "@/lib/proactiveInbox";
 import { cn } from "@/lib/utils";
 import {
   readBackgroundSessionTitlesEnabled,
@@ -284,6 +368,7 @@ import {
 import { SettingsHarnessesSection } from "./settings/SettingsHarnessesSection";
 import { SettingsCustomAgentsSection } from "./settings/SettingsCustomAgentsSection";
 import { PickerVisibilitySetting } from "./settings/PickerVisibilitySetting";
+import { GlobalShortcutControl } from "./settings/GlobalShortcutControl";
 
 // Admin-only management surfaces, rendered as the Members / Policies settings
 // sub-categories. Visible to admins in all modes (accounts, OIDC, single-user).
@@ -296,6 +381,9 @@ const PoliciesPage = lazy(() =>
 );
 const SharingPage = lazy(() =>
   import("@/pages/SharingPage").then((m) => ({ default: m.SharingPage })),
+);
+const AdminGeneralPage = lazy(() =>
+  import("@/pages/AdminGeneralPage").then((m) => ({ default: m.AdminGeneralPage })),
 );
 const McpServerPage = lazy(() =>
   import("@/pages/McpServerPage").then((m) => ({ default: m.McpServerPage })),
@@ -323,10 +411,13 @@ export function SettingsPage() {
   // access gating), so they render directly —
   // NOT inside the shared section PageScroll below, which would nest two
   // scroll containers. Both self-gate to admins server-side and client-side.
-  // Members, Policies, and Sharing work in accounts and OIDC modes. MCP
-  // profile management is accounts-only because it verifies account passwords;
-  // useSettingsRoute prevents opening it on other auth providers.
+  // Rendered in ANY multi-user mode (accounts AND OIDC), not gated on
+  // `accountsEnabled` — the nav + pages handle admin gating, and Members runs
+  // read-only under OIDC (no password actions). MCP profile management is
+  // accounts-only because it verifies account passwords; useSettingsRoute
+  // prevents opening it on other auth providers.
   if (
+    section === "admin" ||
     section === "members" ||
     section === "policies" ||
     section === "sharing" ||
@@ -334,7 +425,9 @@ export function SettingsPage() {
   ) {
     return (
       <Suspense fallback={null}>
-        {section === "members" ? (
+        {section === "admin" ? (
+          <AdminGeneralPage />
+        ) : section === "members" ? (
           <MembersPage />
         ) : section === "policies" ? (
           <PoliciesPage />
@@ -363,17 +456,19 @@ export function SettingsPage() {
       {section === "git" && <GitSection />}
       {section === "integrations" && <IntegrationsSection />}
       {section === "mcp" && (
-        <Section title="MCP">
-          {info !== "loading" && info.enabled_connections?.includes("mcp") ? (
-            <McpRegistryConnections />
-          ) : (
-            <p className="text-sm text-muted-foreground">
-              {info === "loading"
-                ? "Loading MCP services…"
-                : "MCP services are not configured on this server."}
-            </p>
-          )}
-        </Section>
+        <SettingsItem entry={MCP_SERVICES_ENTRY}>
+          <Section title="MCP">
+            {info !== "loading" && info.enabled_connections?.includes("mcp") ? (
+              <McpRegistryConnections />
+            ) : (
+              <p className="text-sm text-muted-foreground">
+                {info === "loading"
+                  ? "Loading MCP services…"
+                  : "MCP services are not configured on this server."}
+              </p>
+            )}
+          </Section>
+        </SettingsItem>
       )}
       {section === "shortcuts" && <ShortcutsSection />}
       {section === "import" && <ImportSection />}
@@ -389,26 +484,17 @@ export function SettingsPage() {
 function Section({
   title,
   description,
-  descriptionClassName,
   children,
 }: {
   title: string;
   description?: string;
-  descriptionClassName?: string;
   children: ReactNode;
 }) {
   return (
     <section>
       <h1 className="settings-page-title text-2xl font-medium">{title}</h1>
       {description && (
-        <p
-          className={cn(
-            "mt-1 text-muted-foreground max-md:hidden",
-            descriptionClassName ?? "text-ui",
-          )}
-        >
-          {description}
-        </p>
+        <p className="mt-1 text-sm text-muted-foreground max-md:hidden">{description}</p>
       )}
       <div className="mt-6">{children}</div>
     </section>
@@ -436,6 +522,16 @@ const transcriptViewCards: {
   { value: "terminal", label: "Terminal", icon: TerminalIcon },
 ];
 
+const peerSessionMessageCards: {
+  value: PeerSessionMessageDisplay;
+  label: string;
+  icon: typeof MessagesSquareIcon;
+}[] = [
+  { value: "collapse", label: "Collapse", icon: FoldVerticalIcon },
+  { value: "show", label: "Show", icon: EyeIcon },
+  { value: "hide", label: "Hide", icon: EyeOffIcon },
+];
+
 const workspacePanelCards: {
   value: WorkspacePanelDefault;
   label: string;
@@ -454,13 +550,14 @@ const workspaceTabCards: {
   { value: "changes", label: "Changes", icon: FileDiffIcon },
   { value: "github", label: "Pull Requests", icon: GitPullRequestIcon },
   { value: "subagents", label: "Agents", icon: BotIcon },
+  { value: "tasks", label: "Tasks", icon: ListChecksIcon },
 ];
 
-/** Centered icon + label body shared by the Mode and Terminal theme cards. */
-function iconCardBody(Icon: ComponentType<{ className?: string }>, label: string) {
+/** Inline icon and label for compact settings choices. */
+function iconButtonBody(Icon: ComponentType<{ className?: string }>, label: string) {
   return (
     <>
-      <Icon aria-hidden="true" className="size-6 text-muted-foreground" />
+      <Icon aria-hidden="true" className="size-4 shrink-0 text-muted-foreground" />
       <span className="text-ui font-normal md:font-medium">{label}</span>
     </>
   );
@@ -576,19 +673,19 @@ function TranscriptViewDefaultControl() {
     <ThemeSubsection
       labelId={labelId}
       title="Default transcript view"
-      helper="Choose whether terminal-backed chats open in Chat or Terminal view. A view selected in a chat is remembered for the current tab."
+      helper="Open terminal-backed chats in Chat or Terminal view. In-chat choices are remembered for the current tab."
     >
       <CardRadioGroup<TranscriptViewDefault>
+        compact
         labelledBy={labelId}
         value={value}
         onSelect={choose}
         componentId="settings.appearance.transcript_view"
-        className="grid grid-cols-2 gap-3"
-        cardClassName="items-center gap-2 p-4"
+        className="flex flex-wrap gap-2"
         items={transcriptViewCards.map((card) => ({
           value: card.value,
           testId: `transcript-view-default-${card.value}`,
-          body: iconCardBody(card.icon, card.label),
+          body: iconButtonBody(card.icon, card.label),
         }))}
       />
     </ThemeSubsection>
@@ -611,19 +708,19 @@ function WorkspacePanelDefaultControl() {
     <ThemeSubsection
       labelId={labelId}
       title="Workspace panel"
-      helper="Whether new chats open with the Files / Agents / Shells panel visible. Collapsing or expanding the panel updates this. Existing chats keep their last layout."
+      helper="Show the Workspace panel in new chats. Opening or closing it updates this default; existing chats keep their layout."
     >
       <CardRadioGroup<WorkspacePanelDefault>
+        compact
         labelledBy={labelId}
         value={value}
         onSelect={choose}
         componentId="settings.appearance.workspace_panel"
-        className="grid grid-cols-2 gap-3"
-        cardClassName="items-center gap-2 p-4"
+        className="flex flex-wrap gap-2"
         items={workspacePanelCards.map((card) => ({
           value: card.value,
           testId: `workspace-panel-default-${card.value}`,
-          body: iconCardBody(card.icon, card.label),
+          body: iconButtonBody(card.icon, card.label),
         }))}
       />
     </ThemeSubsection>
@@ -722,23 +819,18 @@ function WorkspaceTabsControl() {
           <ThemeSubsection
             labelId={labelId}
             title="Default Workspace tab"
-            helper="Shown first in Workspace. Changing this also updates existing chats when reopened or refreshed. Later tab choices are remembered. File links still open the linked file."
+            helper="Open this tab first, including in existing chats after reopening or refreshing. Later choices are remembered; file links still open their target."
           >
             <CardRadioGroup<DefaultWorkspaceTab>
+              compact
               labelledBy={labelId}
               value={firstTab.value}
               onSelect={choose}
-              className={cn(
-                "grid gap-3",
-                pinnedCards.length > 1 && "grid-cols-2",
-                pinnedCards.length === 3 && "sm:grid-cols-3",
-                pinnedCards.length === 4 && "sm:grid-cols-4",
-              )}
-              cardClassName="items-center gap-2 p-4"
+              className="flex flex-wrap gap-2"
               items={pinnedCards.map((card) => ({
                 value: card.value,
                 testId: `workspace-tab-default-${card.value}`,
-                body: iconCardBody(card.icon, card.label),
+                body: iconButtonBody(card.icon, card.label),
               }))}
             />
           </ThemeSubsection>
@@ -905,7 +997,7 @@ function ColorThemeControl() {
           <div className="flex items-center justify-between gap-4 py-4">
             <SettingsLabel
               label="Translucent sidebars"
-              description="Lets the canvas show through the conversation and workspace rails."
+              description="Show the canvas through the conversation and Workspace sidebars."
             />
             <Switch
               aria-label="Translucent sidebars"
@@ -939,7 +1031,7 @@ function HideUnconfiguredHarnessesControl() {
       <SettingsLabel
         label="Hide unconfigured harnesses"
         labelId={labelId}
-        description="Only show harnesses that are set up on the selected host in the new-chat picker. Harnesses needing a CLI install or sign-in are hidden instead of badged."
+        description="Hide harnesses that need a CLI install or sign-in on the selected host from the new-chat picker."
       />
       <Switch
         aria-labelledby={labelId}
@@ -953,6 +1045,33 @@ function HideUnconfiguredHarnessesControl() {
   );
 }
 
+/** How messages other sessions send appear in a chat, e.g. a supervisor's. */
+function PeerSessionMessageDisplayControl() {
+  const value = usePeerSessionMessageDisplay();
+  const labelId = useId();
+  return (
+    <ThemeSubsection
+      labelId={labelId}
+      title="Messages from other sessions"
+      helper="Collapse or hide messages that agents in other sessions send to a chat. The agent still reads them in full."
+    >
+      <CardRadioGroup<PeerSessionMessageDisplay>
+        compact
+        labelledBy={labelId}
+        value={value}
+        onSelect={writePeerSessionMessageDisplay}
+        componentId="settings.appearance.peer_session_messages"
+        className="flex flex-wrap gap-2"
+        items={peerSessionMessageCards.map((card) => ({
+          value: card.value,
+          testId: `peer-session-messages-${card.value}`,
+          body: iconButtonBody(card.icon, card.label),
+        }))}
+      />
+    </ThemeSubsection>
+  );
+}
+
 /** Opt-in: fold other agents' progress messages the way Codex turns fold. */
 function FoldAssistantNarrationControl() {
   const enabled = useFoldAssistantNarration();
@@ -962,7 +1081,7 @@ function FoldAssistantNarrationControl() {
       <SettingsLabel
         label="Show only the final answer"
         labelId={labelId}
-        description="Codex marks its final answer, so a finished Codex turn folds its progress messages into the Worked row. Turn this on to fold other agents' progress messages too, keeping each turn's last message visible."
+        description="Fold other agents' progress into the Worked row, keeping each turn's last message visible. Codex already folds completed turns."
       />
       <Switch
         aria-labelledby={labelId}
@@ -971,6 +1090,87 @@ function FoldAssistantNarrationControl() {
         data-testid="fold-assistant-narration-toggle"
         className="mt-0.5 shrink-0"
         componentId="settings.appearance.fold_assistant_narration"
+      />
+    </div>
+  );
+}
+
+/** On by default: expanded project folders list a page of sessions behind "Show more". */
+function ProjectFolderPaginationControl() {
+  const collapse = useProjectFolderCollapse();
+  const pageSize = useProjectFolderPageSize();
+  // The text being typed; null shows the saved size, so a bad entry reverts on blur.
+  const [draft, setDraft] = useState<string | null>(null);
+  const collapseLabelId = useId();
+  const pageSizeLabelId = useId();
+  return (
+    <>
+      <div className="flex items-start justify-between gap-6">
+        <SettingsLabel
+          label='Collapse project sessions behind "Show more"'
+          labelId={collapseLabelId}
+          description="An expanded project folder lists its first sessions and a Show more row for the rest. Turn this off to list every session, loading more as you scroll."
+        />
+        <Switch
+          aria-labelledby={collapseLabelId}
+          checked={collapse}
+          onCheckedChange={writeProjectFolderCollapse}
+          data-testid="project-folder-collapse-toggle"
+          className="mt-0.5 shrink-0"
+          componentId="settings.appearance.project_folder_collapse"
+        />
+      </div>
+      {collapse && (
+        <div className="mt-4 flex items-center justify-between gap-6 border-t border-border pt-4">
+          <SettingsLabel
+            label='Sessions to show before "Show more"'
+            labelId={pageSizeLabelId}
+            description={`Each Show more click reveals this many more. Use a whole number from ${PROJECT_FOLDER_PAGE_SIZE_MIN} to ${PROJECT_FOLDER_PAGE_SIZE_MAX}.`}
+          />
+          <Input
+            type="number"
+            inputMode="numeric"
+            min={PROJECT_FOLDER_PAGE_SIZE_MIN}
+            max={PROJECT_FOLDER_PAGE_SIZE_MAX}
+            step={1}
+            aria-labelledby={pageSizeLabelId}
+            data-testid="project-folder-page-size-input"
+            className="h-9 w-20 shrink-0 tabular-nums"
+            value={draft ?? String(pageSize)}
+            onChange={(e) => {
+              setDraft(e.target.value);
+              const next = parseProjectFolderPageSize(e.target.value);
+              if (next !== undefined) writeProjectFolderPageSize(next);
+            }}
+            onBlur={() => setDraft(null)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") e.currentTarget.blur();
+            }}
+          />
+        </div>
+      )}
+    </>
+  );
+}
+
+/** On by default: sidebar rows show hover Pin and Archive buttons beside the "…" menu. */
+function SessionRowQuickActionsControl() {
+  const shown = useSessionRowQuickActions();
+  const labelId = useId();
+  return (
+    <div className="flex items-start justify-between gap-6">
+      <SettingsLabel
+        label="Show Pin and Archive buttons on session rows"
+        labelId={labelId}
+        description={`Turn this off to keep Pin and Archive in the session row's "…" menu and right-click menu only, so they are harder to click by mistake.`}
+      />
+      <Switch
+        aria-labelledby={labelId}
+        checked={shown}
+        onCheckedChange={writeSessionRowQuickActions}
+        data-testid="session-row-quick-actions-toggle"
+        className="mt-0.5 shrink-0"
+        componentId="settings.appearance.session_row_quick_actions"
       />
     </div>
   );
@@ -1004,12 +1204,17 @@ function AppearanceSection() {
 
     writeHideUnconfiguredHarnesses(DEFAULT_HIDE_UNCONFIGURED_HARNESSES);
     writeFoldAssistantNarration(DEFAULT_FOLD_ASSISTANT_NARRATION);
+    writePeerSessionMessageDisplay(DEFAULT_PEER_SESSION_MESSAGE_DISPLAY);
+    writeProjectFolderCollapse(DEFAULT_PROJECT_FOLDER_COLLAPSE);
+    writeProjectFolderPageSize(PROJECT_FOLDER_PAGE_SIZE);
+    writeSessionRowQuickActions(DEFAULT_SESSION_ROW_QUICK_ACTIONS);
 
     applyUiFontFamily(UI_FONT_FAMILY_DEFAULT);
 
     writeCodeFontSizePx(CODE_FONT_SIZE_DEFAULT);
     writeCodeFontFamily(CODE_FONT_FAMILY_DEFAULT);
     writeCodeFontWeight(CODE_FONT_WEIGHT_DEFAULT);
+    writeCodeBlockWordWrap(DEFAULT_CODE_BLOCK_WORD_WRAP);
 
     // Remove the persisted keys so this device has no appearance overrides at
     // all. Some write helpers already remove the key for the default value;
@@ -1023,6 +1228,7 @@ function AppearanceSection() {
           "omnigent:code-font-size",
           "omnigent:code-font-family",
           "omnigent:code-font-weight",
+          CODE_BLOCK_WORD_WRAP_STORAGE_KEY,
           "omnigent:terminal-theme",
           "omnigent:ui-theme-palette",
           "omnigent:custom-theme",
@@ -1032,6 +1238,9 @@ function AppearanceSection() {
           PINNED_WORKSPACE_TABS_STORAGE_KEY,
           "omnigent:hide-unconfigured-harnesses",
           FOLD_ASSISTANT_NARRATION_STORAGE_KEY,
+          PROJECT_FOLDER_COLLAPSE_STORAGE_KEY,
+          PROJECT_FOLDER_PAGE_SIZE_STORAGE_KEY,
+          SESSION_ROW_QUICK_ACTIONS_STORAGE_KEY,
           HIDDEN_PICKER_AGENTS_STORAGE_KEY,
         ]) {
           window.localStorage.removeItem(key);
@@ -1082,11 +1291,7 @@ function AppearanceSection() {
   };
 
   return (
-    <Section
-      title="Appearance"
-      description="Choose how Omnigent looks on this device."
-      descriptionClassName="text-sm"
-    >
+    <Section title="Appearance" description="Choose how Omnigent looks on this device.">
       <div className="flex flex-col gap-6">
         <div key={resetKey} className="flex flex-col gap-6">
           <SettingsGroup title="Theme" testId="settings-group-theme">
@@ -1103,10 +1308,15 @@ function AppearanceSection() {
             <TranscriptViewDefaultControl />
             <div className="mt-4 border-t border-border pt-4">
               <HideUnconfiguredHarnessesControl />
+            </div>
+            <div className="mt-4 border-t border-border pt-4">
               <PickerVisibilitySetting />
             </div>
             <div className="mt-4 border-t border-border pt-4">
               <FoldAssistantNarrationControl />
+            </div>
+            <div className="mt-4 border-t border-border pt-4">
+              <PeerSessionMessageDisplayControl />
             </div>
           </SettingsGroup>
 
@@ -1114,6 +1324,13 @@ function AppearanceSection() {
             <WorkspacePanelDefaultControl />
             <div className="mt-4 border-t border-border pt-4">
               <WorkspaceTabsControl />
+            </div>
+          </SettingsGroup>
+
+          <SettingsGroup title="Sidebar" testId="settings-group-sidebar">
+            <SessionRowQuickActionsControl />
+            <div className="mt-4 border-t border-border pt-4">
+              <ProjectFolderPaginationControl />
             </div>
           </SettingsGroup>
 
@@ -1136,7 +1353,7 @@ function AppearanceSection() {
         </div>
 
         <SettingsGroup title="Settings data" testId="settings-group-data">
-          <div className="flex flex-wrap items-center justify-end gap-2">
+          <div className="flex flex-col gap-2 md:flex-row md:flex-wrap md:items-center md:justify-end">
             <Button
               variant="outline"
               size="sm"
@@ -1355,15 +1572,19 @@ function GithubIntegrationControl() {
 
   const returnTo = `${window.location.pathname}${window.location.search}`;
 
-  if (status === "loading") {
-    return <p className="text-sm text-muted-foreground">Checking…</p>;
-  }
-  if (status === null) {
-    return <p className="text-sm text-muted-foreground">GitHub status is unavailable.</p>;
+  if (status === "loading" || status === null) {
+    return (
+      <SettingsItem entry={GITHUB_CONNECTION_ENTRY}>
+        <SettingsEntryLabel entry={GITHUB_CONNECTION_ENTRY} labelClassName="text-sm" />
+        <p className="text-sm text-muted-foreground">
+          {status === "loading" ? "Checking…" : "GitHub status is unavailable."}
+        </p>
+      </SettingsItem>
+    );
   }
 
   return (
-    <div className="flex flex-col gap-4">
+    <SettingsItem entry={GITHUB_CONNECTION_ENTRY} className="flex flex-col gap-4">
       {notice === "connected" && (
         <div
           role="status"
@@ -1382,14 +1603,14 @@ function GithubIntegrationControl() {
       )}
 
       <div className="flex flex-wrap items-center justify-between gap-x-6 gap-y-3">
-        <SettingsLabel
-          label="GitHub"
+        <SettingsEntryLabel
+          entry={GITHUB_CONNECTION_ENTRY}
           labelClassName="text-sm"
           className="flex-1"
           description={
             status.connected && status.login
-              ? `Connected as ${status.login}. New sandboxes authenticate gh and git as you, and your public SSH keys are added so you can SSH in.`
-              : "Connect your GitHub account so new sandboxes authenticate gh and git as you, and your public SSH keys are injected."
+              ? `Connected as ${status.login}. New sandboxes use your gh and git credentials and add your public SSH keys for SSH access.`
+              : GITHUB_CONNECTION_ENTRY.description
           }
         />
         <div className="flex shrink-0 items-center gap-2">
@@ -1398,6 +1619,7 @@ function GithubIntegrationControl() {
               variant="ghost"
               size="sm"
               className="h-9"
+              {...settingsControlProps(GITHUB_CONNECTION_ENTRY, "disconnect")}
               disabled={busy}
               data-testid="github-disconnect"
               onClick={() => void onDisconnect()}
@@ -1408,6 +1630,7 @@ function GithubIntegrationControl() {
             <Button
               size="sm"
               className="h-9 gap-2"
+              {...settingsControlProps(GITHUB_CONNECTION_ENTRY, "connect")}
               disabled={busy}
               data-testid="github-connect"
               onClick={() => beginGithubConnect(returnTo)}
@@ -1423,6 +1646,7 @@ function GithubIntegrationControl() {
         <p className="text-xs text-muted-foreground">
           The app may need to be installed on your repositories.{" "}
           <a
+            {...settingsControlProps(GITHUB_CONNECTION_ENTRY, "manageInstallation")}
             href={status.install_url}
             target="_blank"
             rel="noreferrer"
@@ -1433,7 +1657,7 @@ function GithubIntegrationControl() {
           .
         </p>
       )}
-    </div>
+    </SettingsItem>
   );
 }
 
@@ -1445,29 +1669,25 @@ function GithubIntegrationControl() {
  */
 function AlwaysUseWorktreeControl() {
   const [value, setValue] = useState(() => readAlwaysUseWorktree());
-  const labelId = useId();
   const toggle = useCallback((next: boolean) => {
     setValue(next);
     writeAlwaysUseWorktree(next);
   }, []);
   return (
-    <div className="flex items-start justify-between gap-6">
-      <SettingsLabel
-        label="Always use a random worktree"
-        labelId={labelId}
-        className="flex-1"
-        description="Start new sessions in a fresh randomly-named git worktree in any git workspace. A project's own Random worktree setting overrides this."
-        descriptionClassName="text-ui"
-      />
+    <SettingsItem
+      entry={ALWAYS_USE_WORKTREE_ENTRY}
+      className="flex items-start justify-between gap-6"
+    >
+      <SettingsEntryLabel entry={ALWAYS_USE_WORKTREE_ENTRY} className="flex-1" />
       <Switch
-        aria-labelledby={labelId}
+        {...settingsControlProps(ALWAYS_USE_WORKTREE_ENTRY)}
         checked={value}
         onCheckedChange={toggle}
         data-testid="settings-always-use-worktree-toggle"
         className="mt-0.5 shrink-0"
         componentId="settings.git.always_use_worktree"
       />
-    </div>
+    </SettingsItem>
   );
 }
 
@@ -1477,29 +1697,25 @@ function AlwaysUseWorktreeControl() {
  */
 function DeleteWorktreesOnArchiveControl() {
   const [value, setValue] = useState(() => readDeleteWorktreesOnArchive() === true);
-  const labelId = useId();
   const toggle = useCallback((next: boolean) => {
     setValue(next);
     writeDeleteWorktreesOnArchive(next);
   }, []);
   return (
-    <div className="flex items-start justify-between gap-6">
-      <SettingsLabel
-        label="Delete worktrees for archived sessions"
-        labelId={labelId}
-        className="flex-1"
-        description="Remove a session's git worktree directory, including uncommitted changes, when you archive it. The branch is kept."
-        descriptionClassName="text-ui"
-      />
+    <SettingsItem
+      entry={DELETE_WORKTREES_ON_ARCHIVE_ENTRY}
+      className="flex items-start justify-between gap-6"
+    >
+      <SettingsEntryLabel entry={DELETE_WORKTREES_ON_ARCHIVE_ENTRY} className="flex-1" />
       <Switch
-        aria-labelledby={labelId}
+        {...settingsControlProps(DELETE_WORKTREES_ON_ARCHIVE_ENTRY)}
         checked={value}
         onCheckedChange={toggle}
         data-testid="settings-delete-worktrees-on-archive-toggle"
         className="mt-0.5 shrink-0"
         componentId="settings.git.delete_worktrees_on_archive"
       />
-    </div>
+    </SettingsItem>
   );
 }
 
@@ -1553,15 +1769,19 @@ function DatabricksIntegrationControl() {
   if (status !== "loading" && status !== null && !status.enabled) {
     return null;
   }
-  if (status === "loading") {
-    return <p className="text-sm text-muted-foreground">Checking…</p>;
-  }
-  if (status === null) {
-    return <p className="text-sm text-muted-foreground">Databricks status is unavailable.</p>;
+  if (status === "loading" || status === null) {
+    return (
+      <SettingsItem entry={DATABRICKS_CONNECTION_ENTRY}>
+        <SettingsEntryLabel entry={DATABRICKS_CONNECTION_ENTRY} labelClassName="text-sm" />
+        <p className="text-sm text-muted-foreground">
+          {status === "loading" ? "Checking…" : "Databricks status is unavailable."}
+        </p>
+      </SettingsItem>
+    );
   }
 
   return (
-    <div className="flex flex-col gap-4">
+    <SettingsItem entry={DATABRICKS_CONNECTION_ENTRY} className="flex flex-col gap-4">
       {notice === "connected" && (
         <div
           role="status"
@@ -1580,14 +1800,14 @@ function DatabricksIntegrationControl() {
       )}
 
       <div className="flex flex-wrap items-center justify-between gap-x-6 gap-y-3">
-        <SettingsLabel
-          label="Databricks"
+        <SettingsEntryLabel
+          entry={DATABRICKS_CONNECTION_ENTRY}
           labelClassName="text-sm"
           className="flex-1"
           description={
             status.connected && status.workspace_host
-              ? `Connected to ${status.workspace_host}${status.databricks_user ? ` as ${status.databricks_user}` : ""}. New sandboxes reach the Databricks Unity Gateway (MCP + model serving) as you.`
-              : "Connect your Databricks workspace so new sandboxes reach its Unity Gateway (MCP + model serving) as you."
+              ? `Connected to ${status.workspace_host}${status.databricks_user ? ` as ${status.databricks_user}` : ""}. New sandboxes access Unity Gateway (MCP and model serving) as you.`
+              : DATABRICKS_CONNECTION_ENTRY.description
           }
         />
         <div className="flex shrink-0 items-center gap-2">
@@ -1596,6 +1816,7 @@ function DatabricksIntegrationControl() {
               variant="ghost"
               size="sm"
               className="h-9"
+              {...settingsControlProps(DATABRICKS_CONNECTION_ENTRY, "disconnect")}
               disabled={busy}
               data-testid="databricks-disconnect"
               onClick={() => void onDisconnect()}
@@ -1605,6 +1826,7 @@ function DatabricksIntegrationControl() {
           ) : (
             <>
               <Input
+                {...settingsControlProps(DATABRICKS_CONNECTION_ENTRY, "workspace")}
                 type="text"
                 inputMode="url"
                 placeholder="workspace-host.cloud.databricks.com"
@@ -1616,6 +1838,7 @@ function DatabricksIntegrationControl() {
               <Button
                 size="sm"
                 className="h-9"
+                {...settingsControlProps(DATABRICKS_CONNECTION_ENTRY, "connect")}
                 disabled={busy || workspace.trim() === ""}
                 data-testid="databricks-connect"
                 onClick={() => beginDatabricksConnect(workspace.trim(), returnTo)}
@@ -1626,7 +1849,7 @@ function DatabricksIntegrationControl() {
           )}
         </div>
       </div>
-    </div>
+    </SettingsItem>
   );
 }
 
@@ -1646,8 +1869,7 @@ function AlwaysSteerControl() {
         label="Always steer"
         labelId={labelId}
         className="flex-1"
-        description="Send follow-ups straight into the running turn instead of queuing them. The agent folds each one into its current work where the harness supports it, otherwise at the next turn."
-        descriptionClassName="text-ui"
+        description="Send follow-ups into the running turn. Harnesses without steering support use them on the next turn."
       />
       <Switch
         aria-labelledby={labelId}
@@ -1683,7 +1905,6 @@ function ComposerSendShortcutControl() {
             <p>On: Enter inserts a newline and {MOD_KEY}+Enter submits.</p>
           </>
         }
-        descriptionClassName="text-ui"
       />
       <Switch
         aria-labelledby={labelId}
@@ -1720,8 +1941,7 @@ function OpenLinksInAppControl() {
         labelId={labelId}
         descriptionId={descriptionId}
         className="flex-1"
-        description={`Open web links from chat in in-app browser tabs, reusing a tab already showing the same URL. ${MOD_KEY}+click also opens in-app; Shift+click opens your default browser.`}
-        descriptionClassName="text-ui"
+        description={`Open chat links in-app, reusing matching tabs. ${MOD_KEY}+click also opens in-app; Shift+click opens your default browser.`}
       />
       <Switch
         aria-labelledby={labelId}
@@ -1753,8 +1973,7 @@ function BackgroundSessionTitlesControl() {
         labelId={labelId}
         descriptionId={descriptionId}
         className="flex-1"
-        description="Generate a concise title in the background after the first message. Turn this off to keep the default session name."
-        descriptionClassName="text-ui"
+        description="Name sessions after the first message. Turn off to keep default names."
       />
       <Switch
         aria-labelledby={labelId}
@@ -1787,8 +2006,7 @@ function OpenSubagentsInPanelControl() {
         labelId={labelId}
         descriptionId={descriptionId}
         className="flex-1"
-        description="Show a sub-agent's chat as a tab beside the main chat instead of replacing it. On phones, sub-agents still open full screen."
-        descriptionClassName="text-ui"
+        description="Open sub-agent chats beside the main chat. On phones, they still open full screen."
       />
       <Switch
         aria-labelledby={labelId}
@@ -1838,7 +2056,7 @@ function TerminalClipboardControl() {
           descriptionId={descriptionId}
           description={
             canRemember
-              ? "Controls copying text from all sessions and terminals on this server in this browser or app. Allowing copying also lets terminal programs silently replace your clipboard with text or commands you didn’t intend to paste."
+              ? "Control copying from all sessions and terminals on this server, in this browser or app. Allowing it lets terminal programs silently replace your clipboard with unwanted text or commands."
               : "This connection can’t remember clipboard permissions. You can still allow or block copying for each open terminal."
           }
         />
@@ -1874,8 +2092,57 @@ function TerminalClipboardControl() {
   );
 }
 
+function AdminViewControl() {
+  const eligible = useSyncExternalStore(subscribeIdentity, getCurrentAdminEligibility, () => false);
+  const info = useServerInfo();
+  // Failed discovery has no capability flag; keep an existing off cookie recoverable.
+  if (
+    !eligible ||
+    info === "loading" ||
+    isBootFallbackInfo(info) ||
+    info.admin_view === false ||
+    (isAdminViewEnabled() && (!info.admin_view || info.single_user || isDatabricksWorkspace()))
+  )
+    return null;
+  return (
+    <SettingsGroup title="Administration">
+      <div className="flex items-center justify-between gap-4">
+        <SettingsLabel
+          label="Admin view"
+          description="Turn off to use your normal session access."
+        />
+        <Switch
+          aria-label="Admin view"
+          checked={isAdminViewEnabled()}
+          onCheckedChange={(enabled) => {
+            try {
+              setAdminViewEnabled(enabled);
+            } catch (error) {
+              toast.error(error instanceof Error ? error.message : "Could not change admin view.");
+            }
+          }}
+          componentId="settings.general.admin_view"
+        />
+      </div>
+    </SettingsGroup>
+  );
+}
+
 /** App-wide behavior settings. */
+/** The viewer's Omni Advisor switch, where the server offers it. */
+function ProactiveAgentGroup() {
+  const { available } = useProactiveAgentSettings();
+  if (!available) return null;
+  return (
+    <SettingsGroup title={PROACTIVE_AGENT_DISPLAY_NAME} testId="settings-group-proactive-agent">
+      <ProactiveAgentSettingControl scope="me" />
+    </SettingsGroup>
+  );
+}
+
 function GeneralSection() {
+  const info = useServerInfo();
+  const titleInstructions = info !== "loading" && info.session_title_instructions === true;
   return (
     <Section title="General" description="Configure general Omnigent behavior.">
       <div className="flex flex-col gap-6">
@@ -1887,6 +2154,11 @@ function GeneralSection() {
         </SettingsGroup>
         <SettingsGroup title="Sessions" testId="settings-group-sessions">
           <BackgroundSessionTitlesControl />
+          {titleInstructions && (
+            <div className="mt-4 border-t border-border pt-4">
+              <SessionTitleInstructionsControl />
+            </div>
+          )}
           <div className="mt-4 border-t border-border pt-4">
             <OpenSubagentsInPanelControl />
           </div>
@@ -1894,11 +2166,19 @@ function GeneralSection() {
         <SettingsGroup title="Terminal" testId="settings-group-terminal">
           <TerminalClipboardControl />
         </SettingsGroup>
+        <ProactiveAgentGroup />
         {supportsBrowser() && (
           <SettingsGroup title="Links" testId="settings-group-links">
             <OpenLinksInAppControl />
           </SettingsGroup>
         )}
+        <BrowserAgentToolsSettingsGroup />
+        {supportsGlobalShortcut() && (
+          <SettingsGroup title="Desktop app" testId="settings-group-desktop-app">
+            <GlobalShortcutControl />
+          </SettingsGroup>
+        )}
+        <AdminViewControl />
       </div>
     </Section>
   );
@@ -1919,16 +2199,14 @@ function DefaultBaseBranchControl() {
   }, []);
 
   return (
-    <div className="flex flex-wrap items-center justify-between gap-x-6 gap-y-3">
-      <SettingsLabel
-        label="Default base branch"
-        className="flex-1"
-        description="Auto-filled as the base when you name a new worktree branch. Leave blank to not auto-fill."
-        descriptionClassName="text-ui"
-      />
+    <SettingsItem
+      entry={DEFAULT_BASE_BRANCH_ENTRY}
+      className="flex flex-wrap items-center justify-between gap-x-6 gap-y-3"
+    >
+      <SettingsEntryLabel entry={DEFAULT_BASE_BRANCH_ENTRY} className="flex-1" />
       <Input
+        {...settingsControlProps(DEFAULT_BASE_BRANCH_ENTRY)}
         type="text"
-        aria-label="Default base branch"
         data-testid="settings-default-base-branch-input"
         placeholder="e.g. main"
         spellCheck={false}
@@ -1939,16 +2217,12 @@ function DefaultBaseBranchControl() {
         onChange={(e) => update(e.target.value)}
         componentId="settings.git.default_branch"
       />
-    </div>
+    </SettingsItem>
   );
 }
 
-/**
- * UI font size stepper. Maps one of the supported discrete px values into
- * typography tokens via --desktop-ui-font-size (see lib/uiFontPreferences.ts)
- * without resizing layout or icons. The chosen value applies directly on
- * every viewport; only the unset default differs between desktop and mobile.
- */
+/** Interface and conversation font size stepper. Updates --desktop-ui-font-size
+ * without resizing layout or icons. */
 function UiFontSizeControl() {
   // `px` is the committed value: clamped, persisted, and applied to the UI.
   // `draft` is the raw text in the box, kept separate so mid-edit states the
@@ -1956,14 +2230,14 @@ function UiFontSizeControl() {
   // the way to "18") or an empty field while retyping — don't get clamped on
   // every keystroke. We only commit while typing when the draft is already a
   // valid in-range size; blur/Enter clamps and re-syncs the text.
-  const [px, setPx] = useState(() => readUiFontSizePx());
+  const [px, setPx] = useState(() => readAppliedUiFontSizePx());
   const [draft, setDraft] = useState(() => String(px));
 
   useEffect(() => {
     if (typeof window.matchMedia !== "function") return;
     const media = window.matchMedia(UI_FONT_SIZE_MOBILE_QUERY);
     const syncViewportDefault = () => {
-      const next = readUiFontSizePx();
+      const next = readAppliedUiFontSizePx();
       setPx(next);
       setDraft(String(next));
     };
@@ -1997,17 +2271,20 @@ function UiFontSizeControl() {
   // draft reverts to the last committed size rather than a bogus one.
   const commitDraft = useCallback(() => {
     const value = Number(draft);
-    commit(Number.isFinite(value) && draft.trim() !== "" ? value : px);
+    const next = Number.isFinite(value) && draft.trim() !== "" ? clampUiFontSizePx(value) : px;
+    if (next !== px) commit(next);
+    else setDraft(String(px));
   }, [commit, draft, px]);
 
   const atMin = px <= UI_FONT_SIZE_MIN;
   const atMax = px >= UI_FONT_SIZE_MAX;
 
   return (
-    <div className="flex flex-wrap items-center justify-between gap-x-6 gap-y-3">
+    <div className="flex items-center justify-between gap-6">
       <SettingsLabel
+        className="flex-1"
         label="Interface font size"
-        description="Set text across the interface. Icons and spacing stay fixed."
+        description="Sets interface and conversation text. Icons and spacing stay fixed."
       />
       {/* One cohesive pill: [ −  | value px |  + ]. Segments share the pill
           border via inner dividers rather than floating as separate boxes. */}
@@ -2015,7 +2292,7 @@ function UiFontSizeControl() {
         role="group"
         aria-label="Interface font size"
         className={cn(
-          "inline-flex h-9 items-stretch overflow-hidden rounded-lg border border-input bg-background transition-colors dark:bg-input",
+          "inline-flex h-9 shrink-0 items-stretch overflow-hidden rounded-lg border border-input bg-background transition-colors dark:bg-input",
           "focus-within:border-ring focus-within:ring-3 focus-within:ring-ring/50",
         )}
       >
@@ -2080,44 +2357,40 @@ function UiFontFamilyControl() {
   const isDefault = family.trim() === UI_FONT_FAMILY_DEFAULT;
 
   return (
-    <div className="flex flex-wrap items-center justify-between gap-x-6 gap-y-3">
-      {/* Take the remaining width (and let the longer description wrap within
-          this column) so the input stays inline instead of dropping to its own
-          row — matches the font-size row's alignment. */}
+    <div
+      role="group"
+      aria-label="Font family"
+      className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-2 gap-y-3 md:grid-cols-[minmax(0,1fr)_auto_auto]"
+    >
       <SettingsLabel
         label="Font family"
-        className="flex-1"
-        description="Use any font installed on this device. Leave blank for the system default."
+        className="md:mr-4"
+        description="Use an installed font. Leave blank for the system default."
       />
-      {/* Reset sits left of the input so the input is the rightmost element and
-          its right edge lines up flush with the font-size stepper above.
-          `invisible` (not removed) at the default keeps the row from shifting. */}
-      <div role="group" aria-label="Font family" className="flex shrink-0 items-center gap-2">
-        <Button
-          type="button"
-          variant="ghost"
-          size="sm"
-          data-testid="ui-font-family-reset"
-          disabled={isDefault}
-          className={cn("h-9", isDefault && "invisible")}
-          onClick={() => update(UI_FONT_FAMILY_DEFAULT)}
-          componentId="settings.appearance.ui_font_family_reset"
-        >
-          Reset
-        </Button>
-        <Input
-          type="text"
-          aria-label="UI font family"
-          data-testid="ui-font-family-input"
-          placeholder="System default"
-          spellCheck={false}
-          autoCapitalize="off"
-          autoCorrect="off"
-          className="h-9 w-56"
-          value={family}
-          onChange={(e) => update(e.target.value)}
-        />
-      </div>
+      <Button
+        type="button"
+        variant="ghost"
+        size="sm"
+        data-testid="ui-font-family-reset"
+        disabled={isDefault}
+        className={cn("h-9", isDefault && "invisible")}
+        onClick={() => update(UI_FONT_FAMILY_DEFAULT)}
+        componentId="settings.appearance.ui_font_family_reset"
+      >
+        Reset
+      </Button>
+      <Input
+        type="text"
+        aria-label="UI font family"
+        data-testid="ui-font-family-input"
+        placeholder="System default"
+        spellCheck={false}
+        autoCapitalize="off"
+        autoCorrect="off"
+        className="col-span-2 h-9 w-full md:col-span-1 md:w-56"
+        value={family}
+        onChange={(e) => update(e.target.value)}
+      />
     </div>
   );
 }
@@ -2168,9 +2441,10 @@ function UiCodeFontSizeControl() {
   const atMax = px >= CODE_FONT_SIZE_MAX;
 
   return (
-    <div className="flex flex-wrap items-center justify-between gap-x-6 gap-y-3">
+    <div className="flex items-center justify-between gap-6">
       <SettingsLabel
         label="Code font size"
+        className="flex-1"
         description="Size of code in the editor and terminal."
       />
       {/* One cohesive pill: [ −  | value px |  + ] — same shell as the UI
@@ -2179,7 +2453,7 @@ function UiCodeFontSizeControl() {
         role="group"
         aria-label="Code font size"
         className={cn(
-          "inline-flex h-9 items-stretch overflow-hidden rounded-lg border border-input bg-background transition-colors dark:bg-input",
+          "inline-flex h-9 shrink-0 items-stretch overflow-hidden rounded-lg border border-input bg-background transition-colors dark:bg-input",
           "focus-within:border-ring focus-within:ring-3 focus-within:ring-ring/50",
         )}
       >
@@ -2241,41 +2515,40 @@ function UiCodeFontFamilyControl() {
   const isDefault = family.trim() === CODE_FONT_FAMILY_DEFAULT;
 
   return (
-    <div className="flex flex-wrap items-center justify-between gap-x-6 gap-y-3">
+    <div
+      role="group"
+      aria-label="Code font family"
+      className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-2 gap-y-3 md:grid-cols-[minmax(0,1fr)_auto_auto]"
+    >
       <SettingsLabel
         label="Code font family"
-        className="flex-1"
-        description="Font for the code editor and terminal. Leave blank for the default."
+        className="md:mr-4"
+        description="Font for the editor and terminal. Leave blank for the default."
       />
-      {/* Reset sits left of the input so the input's right edge lines up flush
-          with the size stepper above. `invisible` (not removed) at the default
-          keeps the row from shifting. */}
-      <div role="group" aria-label="Code font family" className="flex shrink-0 items-center gap-2">
-        <Button
-          type="button"
-          variant="ghost"
-          size="sm"
-          data-testid="code-font-family-reset"
-          disabled={isDefault}
-          className={cn("h-9", isDefault && "invisible")}
-          onClick={() => update(CODE_FONT_FAMILY_DEFAULT)}
-          componentId="settings.appearance.code_font_family_reset"
-        >
-          Reset
-        </Button>
-        <Input
-          type="text"
-          aria-label="Code font family"
-          data-testid="code-font-family-input"
-          placeholder="Editor default"
-          spellCheck={false}
-          autoCapitalize="off"
-          autoCorrect="off"
-          className="h-9 w-56"
-          value={family}
-          onChange={(e) => update(e.target.value)}
-        />
-      </div>
+      <Button
+        type="button"
+        variant="ghost"
+        size="sm"
+        data-testid="code-font-family-reset"
+        disabled={isDefault}
+        className={cn("h-9", isDefault && "invisible")}
+        onClick={() => update(CODE_FONT_FAMILY_DEFAULT)}
+        componentId="settings.appearance.code_font_family_reset"
+      >
+        Reset
+      </Button>
+      <Input
+        type="text"
+        aria-label="Code font family"
+        data-testid="code-font-family-input"
+        placeholder="Editor default"
+        spellCheck={false}
+        autoCapitalize="off"
+        autoCorrect="off"
+        className="col-span-2 h-9 w-full md:col-span-1 md:w-56"
+        value={family}
+        onChange={(e) => update(e.target.value)}
+      />
     </div>
   );
 }
@@ -2294,7 +2567,7 @@ function UiCodeFontWeightControl() {
       <SettingsLabel
         label="Heavier code font"
         className="flex-1"
-        description="Use a slightly heavier font weight in the code editor and terminal."
+        description="Use heavier text in the editor and terminal."
       />
       <Switch
         aria-label="Use heavier code text"
@@ -2389,13 +2662,13 @@ function LocalCliSection() {
   return (
     <Section
       title="Local CLI"
-      description="The Omnigent command-line tool this app uses to run a local server and connect this machine as a runner."
+      description="Run a local server and connect this machine as a runner with the Omnigent CLI."
     >
       <SettingsGroup title="CLI status">
         {status === null ? (
           <p className="text-ui text-muted-foreground">CLI status is unavailable.</p>
         ) : (
-          <div className="flex flex-col gap-4">
+          <SettingsItem entry={LOCAL_CLI_ENTRY} className="flex flex-col gap-4">
             <div className="flex items-center gap-2 text-ui">
               <span
                 aria-hidden
@@ -2422,9 +2695,8 @@ function LocalCliSection() {
               </div>
             ) : (
               <div className="flex flex-col gap-2">
-                <p className="text-ui text-muted-foreground">
-                  The Omnigent CLI wasn't found. Install it, then set its path from the connect
-                  screen:
+                <p className="text-sm text-muted-foreground">
+                  Install the Omnigent CLI, then set its path from the connect screen:
                 </p>
                 {status.installCommand && (
                   <code className="block overflow-x-auto rounded-md border border-border bg-muted/40 px-3 py-2 text-sm">
@@ -2441,14 +2713,14 @@ function LocalCliSection() {
             ) : (
               <>
                 <p className="text-sm text-muted-foreground">
-                  For security, a custom path can only be set from the connect screen — this
-                  prevents a connected server from pointing the app at a different binary. Open it
-                  from the Server menu (Change Server…) and use the settings gear.
+                  Set a custom path from Server → Change Server… → settings gear. This keeps
+                  connected servers from changing the app's CLI binary.
                 </p>
 
                 {status.source === "configured" && (
                   <div>
                     <Button
+                      {...settingsControlProps(LOCAL_CLI_ENTRY, "reset")}
                       variant="ghost"
                       size="sm"
                       disabled={busy}
@@ -2460,19 +2732,12 @@ function LocalCliSection() {
                 )}
               </>
             )}
-          </div>
+          </SettingsItem>
         )}
       </SettingsGroup>
     </Section>
   );
 }
-
-const UPDATE_MODE_LABELS: Record<UpdateMode, string> = {
-  default: "Automatic (check periodically, ask before installing)",
-  start: "Check when Omnigent starts",
-  manual: "Manual only",
-  none: "Off",
-};
 
 function UpdatesSection() {
   const bridge = updateBridge();
@@ -2553,10 +2818,7 @@ function UpdatesSection() {
   }
 
   return (
-    <Section
-      title="Updates"
-      description="Desktop app update preferences for this installed Omnigent shell."
-    >
+    <Section title="Updates" description="Manage desktop app updates on this device.">
       {config === null ? (
         <SettingsGroup title="Preferences">
           <p className="text-ui text-muted-foreground">Update settings are unavailable.</p>
@@ -2564,46 +2826,76 @@ function UpdatesSection() {
       ) : (
         <div className="flex max-w-2xl flex-col gap-6">
           <SettingsGroup title="Preferences" testId="settings-group-update-preferences">
-            <label className="flex flex-col gap-2">
-              <span className="text-ui font-normal md:font-medium">Update mode</span>
-              <Select
-                value={config.mode}
-                onValueChange={(value) => void persistConfig({ mode: value as UpdateMode })}
-                disabled={saving}
-                componentId="settings.updates.mode"
-                valueHasNoPii
-              >
-                <SelectTrigger className="w-full max-w-md" data-testid="update-mode-select">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {(Object.keys(UPDATE_MODE_LABELS) as UpdateMode[]).map((mode) => (
-                    <SelectItem key={mode} value={mode}>
-                      {UPDATE_MODE_LABELS[mode]}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </label>
+            <SettingsItem entry={UPDATE_MODE_ENTRY}>
+              <div className="flex flex-col gap-2">
+                <label className="flex flex-col gap-2">
+                  <span
+                    id={settingsLabelId(UPDATE_MODE_ENTRY)}
+                    className="text-ui font-normal md:font-medium"
+                  >
+                    {UPDATE_MODE_ENTRY.label}
+                  </span>
+                  <Select
+                    value={config.mode}
+                    onValueChange={(value) => void persistConfig({ mode: value as UpdateMode })}
+                    disabled={saving}
+                    componentId="settings.updates.mode"
+                    valueHasNoPii
+                  >
+                    <SelectTrigger
+                      {...settingsControlProps(UPDATE_MODE_ENTRY)}
+                      className="w-full max-w-md"
+                      data-testid="update-mode-select"
+                    >
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent {...settingsOverlayProps(UPDATE_MODE_ENTRY)}>
+                      {(Object.keys(UPDATE_MODE_LABELS) as UpdateMode[]).map((mode) => (
+                        <SelectItem key={mode} value={mode}>
+                          {UPDATE_MODE_LABELS[mode]}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </label>
+                <span
+                  id={settingsDescriptionId(UPDATE_MODE_ENTRY)}
+                  className="text-sm text-muted-foreground"
+                >
+                  {UPDATE_MODE_ENTRY.description}
+                </span>
+              </div>
+            </SettingsItem>
 
-            <div className="mt-4 flex items-center justify-between gap-4 border-t border-border pt-4">
-              <SettingsLabel
-                label="Install downloaded updates on next quit"
-                description="Applies only after you choose to download an update."
-              />
-              <Switch
-                checked={config.autoInstall}
-                onCheckedChange={(checked) => void persistConfig({ autoInstall: checked })}
-                disabled={saving}
-                aria-label="Install downloaded updates on next quit"
-                componentId="settings.updates.auto_install"
-              />
+            <div className="mt-4 border-t border-border pt-4">
+              <SettingsItem
+                entry={INSTALL_UPDATES_ON_QUIT_ENTRY}
+                className="flex items-center justify-between gap-4"
+              >
+                <SettingsLabel
+                  label={INSTALL_UPDATES_ON_QUIT_ENTRY.label}
+                  labelId={settingsLabelId(INSTALL_UPDATES_ON_QUIT_ENTRY)}
+                  descriptionId={settingsDescriptionId(INSTALL_UPDATES_ON_QUIT_ENTRY)}
+                  description={INSTALL_UPDATES_ON_QUIT_ENTRY.description}
+                />
+                <Switch
+                  {...settingsControlProps(INSTALL_UPDATES_ON_QUIT_ENTRY)}
+                  checked={config.autoInstall}
+                  onCheckedChange={(checked) => void persistConfig({ autoInstall: checked })}
+                  disabled={saving}
+                  componentId="settings.updates.auto_install"
+                />
+              </SettingsItem>
             </div>
           </SettingsGroup>
 
           <SettingsGroup title="Actions" testId="settings-group-update-actions">
-            <div className="flex flex-wrap items-center gap-3">
+            <SettingsItem
+              entry={CHECK_FOR_UPDATES_ENTRY}
+              className="flex flex-wrap items-center gap-3"
+            >
               <Button
+                {...settingsControlProps(CHECK_FOR_UPDATES_ENTRY, "check")}
                 onClick={() => void onCheck()}
                 loading={checking}
                 componentId="settings.updates.check_now"
@@ -2611,7 +2903,7 @@ function UpdatesSection() {
                 Check for updates now
               </Button>
               {saving && <span className="text-sm text-muted-foreground">Saving…</span>}
-            </div>
+            </SettingsItem>
           </SettingsGroup>
 
           {lastCheckError && (
@@ -2631,6 +2923,7 @@ function UpdatesSection() {
 
 function AccountSection() {
   const info = useServerInfo();
+  const capabilitiesLoading = info === "loading" || isBootFallbackInfo(info);
   const accountsEnabled = info !== "loading" && info.accounts_enabled;
   // Identity for display. Sourced from the mode-agnostic `/v1/me` probe so it
   // works under OIDC too (the accounts-only `/auth/me` doesn't exist there).
@@ -2647,27 +2940,14 @@ function AccountSection() {
   const [pwDone, setPwDone] = useState(false);
 
   useEffect(() => {
+    if (capabilitiesLoading) return;
     void (async () => {
       const userId = await resolveIdentity();
       setMe(userId === null ? null : { id: userId, is_admin: getCurrentIsAdmin() });
     })();
-  }, []);
+  }, [capabilitiesLoading]);
 
-  const onSignOut = useCallback(async () => {
-    if (accountsEnabled) {
-      // Accounts: clear the cookie via the JSON logout endpoint, then land on
-      // the SPA login form.
-      await logout();
-      // Hard navigation so the chat store / react-query cache reset.
-      window.location.href = withBasePath("/login");
-      return;
-    }
-    // OIDC: logout is a server-side GET redirect at /auth/logout that clears
-    // the session cookie (and honors the IdP end-session endpoint when
-    // configured). A hard navigation lets the browser follow it and resets
-    // client caches.
-    window.location.href = withBasePath("/auth/logout");
-  }, [accountsEnabled]);
+  const onSignOut = useCallback(() => signOutOfBrowserSession(accountsEnabled), [accountsEnabled]);
 
   const resetPwForm = useCallback(() => {
     setOldPw("");
@@ -2727,26 +3007,32 @@ function AccountSection() {
           {/* Change password is accounts-only — an OIDC identity's password
               lives with the IdP, so there's nothing to change here. */}
           {accountsEnabled && (
+            <SettingsItem entry={ACCOUNT_PASSWORD_ENTRY}>
+              <Button
+                {...settingsControlProps(ACCOUNT_PASSWORD_ENTRY, "change")}
+                variant="ghost"
+                className="w-full justify-start gap-2"
+                onClick={() => {
+                  resetPwForm();
+                  setPwOpen(true);
+                }}
+                componentId="settings.account.change_password"
+              >
+                <KeyRoundIcon className="size-4" /> Change password
+              </Button>
+            </SettingsItem>
+          )}
+          <SettingsItem entry={ACCOUNT_SIGN_OUT_ENTRY}>
             <Button
+              {...settingsControlProps(ACCOUNT_SIGN_OUT_ENTRY, "signOut")}
               variant="ghost"
               className="w-full justify-start gap-2"
-              onClick={() => {
-                resetPwForm();
-                setPwOpen(true);
-              }}
-              componentId="settings.account.change_password"
+              onClick={() => void onSignOut()}
+              componentId="settings.account.sign_out"
             >
-              <KeyRoundIcon className="size-4" /> Change password
+              <LogOutIcon className="size-4" /> Sign out
             </Button>
-          )}
-          <Button
-            variant="ghost"
-            className="w-full justify-start gap-2"
-            onClick={() => void onSignOut()}
-            componentId="settings.account.sign_out"
-          >
-            <LogOutIcon className="size-4" /> Sign out
-          </Button>
+          </SettingsItem>
         </div>
       </div>
 
@@ -2757,7 +3043,7 @@ function AccountSection() {
           if (!open) resetPwForm();
         }}
       >
-        <DialogContent>
+        <DialogContent {...settingsOverlayProps(ACCOUNT_PASSWORD_ENTRY, "change")}>
           <DialogHeader>
             <DialogTitle>Change password</DialogTitle>
             <DialogDescription>
@@ -2776,6 +3062,7 @@ function AccountSection() {
               }}
             >
               <Input
+                {...settingsControlProps(ACCOUNT_PASSWORD_ENTRY, "currentPassword")}
                 type="password"
                 autoComplete="current-password"
                 placeholder="Current password"
@@ -2785,6 +3072,7 @@ function AccountSection() {
                 required
               />
               <Input
+                {...settingsControlProps(ACCOUNT_PASSWORD_ENTRY, "newPassword")}
                 type="password"
                 autoComplete="new-password"
                 placeholder="New password"
@@ -2794,6 +3082,7 @@ function AccountSection() {
                 required
               />
               <Input
+                {...settingsControlProps(ACCOUNT_PASSWORD_ENTRY, "confirmPassword")}
                 type="password"
                 autoComplete="new-password"
                 placeholder="Confirm new password"
@@ -2812,6 +3101,11 @@ function AccountSection() {
               )}
               <DialogFooter>
                 <Button
+                  {...settingsControlProps(
+                    ACCOUNT_PASSWORD_ENTRY,
+                    "submit",
+                    pwBusy ? { alternative: "busy" } : undefined,
+                  )}
                   type="submit"
                   disabled={
                     pwBusy || oldPw.length === 0 || newPw.length === 0 || confirmPw.length === 0
@@ -2826,7 +3120,12 @@ function AccountSection() {
 
           {pwDone && (
             <DialogFooter>
-              <Button onClick={() => setPwOpen(false)}>Done</Button>
+              <Button
+                {...settingsControlProps(ACCOUNT_PASSWORD_ENTRY, "done")}
+                onClick={() => setPwOpen(false)}
+              >
+                Done
+              </Button>
             </DialogFooter>
           )}
         </DialogContent>
@@ -2872,14 +3171,6 @@ function dateGroupLabel(timestampSec: number, now: Date = new Date()): string {
   return date.toLocaleDateString(undefined, { month: "long", year: "numeric" });
 }
 
-const RETENTION_OPTIONS: { label: string; value: string; days: number | null }[] = [
-  { label: "Never", value: "never", days: null },
-  { label: "After 7 days", value: "7", days: 7 },
-  { label: "After 30 days", value: "30", days: 30 },
-  { label: "After 60 days", value: "60", days: 60 },
-  { label: "After 90 days", value: "90", days: 90 },
-];
-
 function retentionDaysToSelectValue(days: number | null): string {
   if (days === null) return "never";
   return String(days);
@@ -2895,7 +3186,7 @@ function ImportSection() {
   return (
     <Section
       title="Import sessions"
-      description="Pull local chats from a machine you're running into Omnigent. Sessions already imported are skipped."
+      description="Import local chats from a connected machine. Already imported sessions are skipped."
     >
       <div className="flex flex-col gap-3">
         <h2 className="text-ui font-medium">Import from a machine</h2>
@@ -3028,224 +3319,250 @@ function ArchivedSection() {
   }, [archived]);
 
   return (
-    <Section
-      title="Archived sessions"
-      description="Sessions you've archived. Restore one to the sidebar, or delete it for good."
-    >
-      <div className="mb-4 flex flex-wrap items-center gap-x-6 gap-y-2">
-        <div className="flex items-center gap-2">
-          <label htmlFor="archived-retention" className="text-ui text-muted-foreground">
-            Mark as expired after
-          </label>
-          <Select
-            value={retentionDaysToSelectValue(retentionDays)}
-            onValueChange={(value) => {
-              const days = selectValueToRetentionDays(value);
-              setRetentionDays(days);
-              writeRetentionDays(days);
-            }}
-          >
-            <SelectTrigger
-              id="archived-retention"
-              aria-label="Mark archived sessions as expired after"
-              data-testid="archived-retention"
-              className="w-40"
-            >
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent position="popper" align="start">
-              {RETENTION_OPTIONS.map((opt) => (
-                <SelectItem key={opt.value} value={opt.value}>
-                  {opt.label}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
-        {items.length > 0 && (
+    <SettingsItem entry={ARCHIVED_SESSIONS_ENTRY}>
+      <Section
+        title={ARCHIVED_SESSIONS_ENTRY.label}
+        description={ARCHIVED_SESSIONS_ENTRY.description}
+      >
+        <div className="mb-4 flex flex-wrap items-center gap-x-6 gap-y-2">
           <div className="flex items-center gap-2">
-            <label htmlFor="archived-project-filter" className="text-ui text-muted-foreground">
-              Project
+            <label htmlFor="archived-retention" className="text-ui text-muted-foreground">
+              Mark as expired after
             </label>
             <Select
-              value={projectToSelectValue(project)}
-              onValueChange={(value) => setProject(selectValueToProject(value))}
+              value={retentionDaysToSelectValue(retentionDays)}
+              onValueChange={(value) => {
+                const days = selectValueToRetentionDays(value);
+                setRetentionDays(days);
+                writeRetentionDays(days);
+              }}
             >
               <SelectTrigger
-                id="archived-project-filter"
-                aria-label="Filter archived sessions by project"
-                data-testid="archived-project-filter"
-                className="w-56"
+                {...settingsControlProps(ARCHIVED_SESSIONS_ENTRY, "retention")}
+                id="archived-retention"
+                data-testid="archived-retention"
+                className="w-40"
               >
                 <SelectValue />
               </SelectTrigger>
-              <SelectContent position="popper" align="start">
-                <SelectItem value={ALL_PROJECTS_VALUE}>All projects</SelectItem>
-                {items.map((name) => (
-                  <SelectItem
-                    key={name}
-                    value={projectToSelectValue(name)}
-                    data-testid={`archived-project-option-${name}`}
-                  >
-                    {name}
+              <SelectContent
+                {...settingsOverlayProps(ARCHIVED_SESSIONS_ENTRY, "retention")}
+                position="popper"
+                align="start"
+              >
+                {ARCHIVED_RETENTION_OPTIONS.map((opt) => (
+                  <SelectItem key={opt.value} value={opt.value}>
+                    {opt.label}
                   </SelectItem>
                 ))}
               </SelectContent>
             </Select>
           </div>
-        )}
-        {!selectionMode && archived.length > 0 && (
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            data-testid="archived-toggle-selection"
-            onClick={() => setSelectionMode(true)}
-          >
-            Select
-          </Button>
-        )}
-      </div>
-
-      {selectionMode && (
-        <ArchivedBulkActionBar
-          selectedIds={selectedIds}
-          allArchived={archived}
-          onSelectAll={selectAll}
-          onDeselectAll={deselectAll}
-          onExit={exitSelectionMode}
-        />
-      )}
-
-      {ownedExpiredSessions.length > 0 && (
-        <div className="mb-4 flex items-center gap-3 rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2">
-          <ClockIcon className="size-4 shrink-0 text-destructive" />
-          <span className="text-ui flex-1">
-            {ownedExpiredSessions.length === 1
-              ? "1 expired session"
-              : `${ownedExpiredSessions.length} expired sessions`}{" "}
-            {listQuery.hasNextPage ? "on loaded pages " : ""}past the {retentionDays}-day retention
-            period.
-          </span>
-          <Button
-            type="button"
-            variant="destructive"
-            size="sm"
-            data-testid="delete-expired"
-            disabled={bulkDelete.isPending}
-            onClick={() => setDeleteExpiredOpen(true)}
-          >
-            Delete expired
-          </Button>
-          <Dialog open={deleteExpiredOpen} onOpenChange={setDeleteExpiredOpen}>
-            <DialogContent>
-              <DialogHeader>
-                <DialogTitle>Delete expired sessions?</DialogTitle>
-                <DialogDescription>
-                  {ownedExpiredSessions.length === 1
-                    ? "1 owned archived session"
-                    : `${ownedExpiredSessions.length} owned archived sessions`}{" "}
-                  older than {retentionDays} days {listQuery.hasNextPage ? "on loaded pages " : ""}
-                  will be permanently deleted. This cannot be undone.
-                  {listQuery.hasNextPage && (
-                    <span className="mt-2 block text-sm">
-                      Note: More archived sessions may exist on unfetched pages. Click "Load more"
-                      to see all expired sessions before deleting.
-                    </span>
-                  )}
-                </DialogDescription>
-              </DialogHeader>
-              <DialogFooter>
-                <Button
-                  variant="ghost"
-                  onClick={() => setDeleteExpiredOpen(false)}
-                  disabled={bulkDelete.isPending}
+          {items.length > 0 && (
+            <div className="flex items-center gap-2">
+              <label htmlFor="archived-project-filter" className="text-ui text-muted-foreground">
+                Project
+              </label>
+              <Select
+                value={projectToSelectValue(project)}
+                onValueChange={(value) => setProject(selectValueToProject(value))}
+              >
+                <SelectTrigger
+                  {...settingsControlProps(ARCHIVED_SESSIONS_ENTRY, "projectFilter")}
+                  id="archived-project-filter"
+                  data-testid="archived-project-filter"
+                  className="w-56"
                 >
-                  Cancel
-                </Button>
-                <Button
-                  variant="destructive"
-                  disabled={bulkDelete.isPending}
-                  onClick={() => {
-                    bulkDelete.mutate({ ids: ownedExpiredSessions.map((c) => c.id) });
-                    setDeleteExpiredOpen(false);
-                  }}
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent
+                  {...settingsOverlayProps(ARCHIVED_SESSIONS_ENTRY, "projectFilter")}
+                  position="popper"
+                  align="start"
                 >
-                  Delete{" "}
-                  {ownedExpiredSessions.length === 1
-                    ? "1 session"
-                    : `${ownedExpiredSessions.length} sessions`}
-                </Button>
-              </DialogFooter>
-            </DialogContent>
-          </Dialog>
-        </div>
-      )}
-
-      {listQuery.isLoading ? (
-        <p className="text-ui text-muted-foreground">Loading…</p>
-      ) : archived.length === 0 && !listQuery.hasNextPage ? (
-        // Definitive empty only when there are no archived rows AND no further
-        // pages to fetch.
-        <p className="text-ui text-muted-foreground">
-          {project ? "No archived sessions in this project." : "No archived sessions."}
-        </p>
-      ) : (
-        <>
-          {archived.length > 0 && (
-            <div className="flex flex-col gap-4">
-              {groupedArchived.map((group) => (
-                <div key={group.label}>
-                  <h3 className="mb-1 px-3 text-sm font-medium text-muted-foreground">
-                    {group.label}
-                  </h3>
-                  <ul className="flex flex-col gap-0.5">
-                    {group.conversations.map((conv) => (
-                      <ArchivedRow
-                        key={conv.id}
-                        conversation={conv}
-                        cutoff={cutoff}
-                        selectionMode={selectionMode}
-                        isSelected={selectedIds.has(conv.id)}
-                        onToggleSelected={toggleSelected}
-                      />
-                    ))}
-                  </ul>
-                </div>
-              ))}
+                  <SelectItem value={ALL_PROJECTS_VALUE}>All projects</SelectItem>
+                  {items.map((name) => (
+                    <SelectItem
+                      {...settingsRuntimeChoiceProps(ARCHIVED_SESSIONS_ENTRY, "projectFilter")}
+                      key={name}
+                      value={projectToSelectValue(name)}
+                      data-testid={`archived-project-option-${name}`}
+                    >
+                      {name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </div>
           )}
-          {archived.length === 0 && (
-            // The list fetches a mixed page (active + archived rows) and filters
-            // to archived client-side; archived sessions are older and can sort
-            // onto later pages, so a page with none isn't the end. Offer to page
-            // forward instead of dead-ending on the definitive empty state.
-            <p className="text-ui text-muted-foreground">
-              {project
-                ? "No archived sessions in this project on this page."
-                : "No archived sessions on this page."}
-            </p>
+          {!selectionMode && archived.length > 0 && (
+            <Button
+              {...settingsControlProps(ARCHIVED_SESSIONS_ENTRY, "select")}
+              type="button"
+              variant="outline"
+              size="sm"
+              data-testid="archived-toggle-selection"
+              onClick={() => setSelectionMode(true)}
+            >
+              Select
+            </Button>
           )}
-          {/* Keep the pager visible whenever more pages exist, independent of the
+        </div>
+
+        {selectionMode && (
+          <ArchivedBulkActionBar
+            selectedIds={selectedIds}
+            allArchived={archived}
+            onSelectAll={selectAll}
+            onDeselectAll={deselectAll}
+            onExit={exitSelectionMode}
+          />
+        )}
+
+        {ownedExpiredSessions.length > 0 && (
+          <div className="mb-4 flex items-center gap-3 rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2">
+            <ClockIcon className="size-4 shrink-0 text-destructive" />
+            <span className="text-ui flex-1">
+              {ownedExpiredSessions.length === 1
+                ? "1 expired session"
+                : `${ownedExpiredSessions.length} expired sessions`}{" "}
+              {listQuery.hasNextPage ? "on loaded pages " : ""}past the {retentionDays}-day
+              retention period.
+            </span>
+            <Button
+              {...settingsControlProps(ARCHIVED_SESSIONS_ENTRY, "deleteExpired")}
+              type="button"
+              variant="destructive"
+              size="sm"
+              data-testid="delete-expired"
+              disabled={bulkDelete.isPending}
+              onClick={() => setDeleteExpiredOpen(true)}
+            >
+              Delete expired
+            </Button>
+            <Dialog open={deleteExpiredOpen} onOpenChange={setDeleteExpiredOpen}>
+              <DialogContent {...settingsOverlayProps(ARCHIVED_SESSIONS_ENTRY, "deleteExpired")}>
+                <DialogHeader>
+                  <DialogTitle>Delete expired sessions?</DialogTitle>
+                  <DialogDescription>
+                    {ownedExpiredSessions.length === 1
+                      ? "1 owned archived session"
+                      : `${ownedExpiredSessions.length} owned archived sessions`}{" "}
+                    older than {retentionDays} days{" "}
+                    {listQuery.hasNextPage ? "on loaded pages " : ""}
+                    will be permanently deleted. This cannot be undone.
+                    {listQuery.hasNextPage && (
+                      <span className="mt-2 block text-sm">
+                        Note: More archived sessions may exist on unfetched pages. Click "Load more"
+                        to see all expired sessions before deleting.
+                      </span>
+                    )}
+                  </DialogDescription>
+                </DialogHeader>
+                <DialogFooter>
+                  <Button
+                    data-settings-dialog-action="Cancel"
+                    variant="ghost"
+                    onClick={() => setDeleteExpiredOpen(false)}
+                    disabled={bulkDelete.isPending}
+                  >
+                    Cancel
+                  </Button>
+                  <Button
+                    {...settingsControlProps(ARCHIVED_SESSIONS_ENTRY, "expiredConfirm", {
+                      runtime: String(ownedExpiredSessions.length),
+                      variant: ownedExpiredSessions.length === 1 ? "one" : undefined,
+                    })}
+                    variant="destructive"
+                    disabled={bulkDelete.isPending}
+                    onClick={() => {
+                      bulkDelete.mutate({ ids: ownedExpiredSessions.map((c) => c.id) });
+                      setDeleteExpiredOpen(false);
+                    }}
+                  >
+                    Delete{" "}
+                    {ownedExpiredSessions.length === 1
+                      ? "1 session"
+                      : `${ownedExpiredSessions.length} sessions`}
+                  </Button>
+                </DialogFooter>
+              </DialogContent>
+            </Dialog>
+          </div>
+        )}
+
+        {listQuery.isLoading ? (
+          <p className="text-ui text-muted-foreground">Loading…</p>
+        ) : archived.length === 0 && !listQuery.hasNextPage ? (
+          // Definitive empty only when there are no archived rows AND no further
+          // pages to fetch.
+          <p className="text-ui text-muted-foreground">
+            {project ? "No archived sessions in this project." : "No archived sessions."}
+          </p>
+        ) : (
+          <>
+            {archived.length > 0 && (
+              <div className="flex flex-col gap-4">
+                {groupedArchived.map((group) => (
+                  <div key={group.label}>
+                    <h3 className="mb-1 px-3 text-sm font-medium text-muted-foreground">
+                      {group.label}
+                    </h3>
+                    <SettingsDataRegion entry={ARCHIVED_SESSIONS_ENTRY} region="sessions">
+                      <ul className="flex flex-col gap-0.5">
+                        {group.conversations.map((conv) => (
+                          <ArchivedRow
+                            key={conv.id}
+                            conversation={conv}
+                            cutoff={cutoff}
+                            selectionMode={selectionMode}
+                            isSelected={selectedIds.has(conv.id)}
+                            onToggleSelected={toggleSelected}
+                          />
+                        ))}
+                      </ul>
+                    </SettingsDataRegion>
+                  </div>
+                ))}
+              </div>
+            )}
+            {archived.length === 0 && (
+              // The list fetches a mixed page (active + archived rows) and filters
+              // to archived client-side; archived sessions are older and can sort
+              // onto later pages, so a page with none isn't the end. Offer to page
+              // forward instead of dead-ending on the definitive empty state.
+              <p className="text-ui text-muted-foreground">
+                {project
+                  ? "No archived sessions in this project on this page."
+                  : "No archived sessions on this page."}
+              </p>
+            )}
+            {/* Keep the pager visible whenever more pages exist, independent of the
               current page's archived count — otherwise a first page of only
               active rows would hide the archived rows on later pages. */}
-          {listQuery.hasNextPage && (
-            <div className="mt-3">
-              <Button
-                type="button"
-                variant="ghost"
-                size="sm"
-                data-testid="archived-load-more"
-                disabled={listQuery.isFetchingNextPage}
-                onClick={() => void listQuery.fetchNextPage()}
-              >
-                {listQuery.isFetchingNextPage ? "Loading…" : "Load more"}
-              </Button>
-            </div>
-          )}
-        </>
-      )}
-    </Section>
+            {listQuery.hasNextPage && (
+              <div className="mt-3">
+                <Button
+                  {...settingsControlProps(
+                    ARCHIVED_SESSIONS_ENTRY,
+                    "loadMore",
+                    listQuery.isFetchingNextPage ? { alternative: "loading" } : undefined,
+                  )}
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  data-testid="archived-load-more"
+                  disabled={listQuery.isFetchingNextPage}
+                  onClick={() => void listQuery.fetchNextPage()}
+                >
+                  {listQuery.isFetchingNextPage ? "Loading…" : "Load more"}
+                </Button>
+              </div>
+            )}
+          </>
+        )}
+      </Section>
+    </SettingsItem>
   );
 }
 
@@ -3283,6 +3600,8 @@ function ArchivedBulkActionBar({
   const allSelected = count > 0 && count === allArchived.length;
   const isBusy = bulkArchive.isPending || bulkDelete.isPending;
   const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false);
+  // How many owned sessions an action applies to; with none, its name is the plain verb.
+  const ownedCount = ownedSelected.length > 0 ? String(ownedSelected.length) : "";
 
   function handleUnarchive() {
     if (ownedSelected.length === 0) return;
@@ -3307,6 +3626,11 @@ function ArchivedBulkActionBar({
             {count === 0 ? "None selected" : `${count} selected`}
           </span>
           <Button
+            {...settingsControlProps(
+              ARCHIVED_SESSIONS_ENTRY,
+              "selectAll",
+              allSelected ? { alternative: "deselect" } : undefined,
+            )}
             type="button"
             variant="ghost"
             size="sm"
@@ -3316,11 +3640,11 @@ function ArchivedBulkActionBar({
             {allSelected ? "Deselect all" : "Select all"}
           </Button>
           <Button
+            {...settingsControlProps(ARCHIVED_SESSIONS_ENTRY, "exitSelection")}
             type="button"
             variant="secondary"
             size="icon-sm"
             className="-translate-y-1/2 absolute top-1/2 right-1 shrink-0 rounded-full"
-            aria-label="Exit selection mode"
             data-testid="archived-exit-selection"
             onClick={onExit}
           >
@@ -3330,6 +3654,9 @@ function ArchivedBulkActionBar({
 
         <div className="flex items-center gap-1.5">
           <Button
+            {...settingsControlProps(ARCHIVED_SESSIONS_ENTRY, "bulkUnarchive", {
+              runtime: ownedCount,
+            })}
             type="button"
             variant="outline"
             size="sm"
@@ -3346,6 +3673,9 @@ function ArchivedBulkActionBar({
             Unarchive {ownedSelected.length > 0 ? ownedSelected.length : ""}
           </Button>
           <Button
+            {...settingsControlProps(ARCHIVED_SESSIONS_ENTRY, "bulkDelete", {
+              runtime: ownedCount,
+            })}
             type="button"
             variant="outline"
             size="sm"
@@ -3371,7 +3701,7 @@ function ArchivedBulkActionBar({
       </div>
 
       <Dialog open={confirmDeleteOpen} onOpenChange={setConfirmDeleteOpen}>
-        <DialogContent>
+        <DialogContent {...settingsOverlayProps(ARCHIVED_SESSIONS_ENTRY, "bulkDelete")}>
           <DialogHeader>
             <DialogTitle>Delete {ownedSelected.length} session(s)?</DialogTitle>
             <DialogDescription>
@@ -3381,6 +3711,7 @@ function ArchivedBulkActionBar({
           </DialogHeader>
           <DialogFooter>
             <Button
+              data-settings-dialog-action="Cancel"
               type="button"
               variant="ghost"
               onClick={() => setConfirmDeleteOpen(false)}
@@ -3389,6 +3720,9 @@ function ArchivedBulkActionBar({
               Cancel
             </Button>
             <Button
+              {...settingsControlProps(ARCHIVED_SESSIONS_ENTRY, "bulkConfirm", {
+                runtime: String(ownedSelected.length),
+              })}
               type="button"
               variant="destructive"
               onClick={handleDelete}
@@ -3468,6 +3802,7 @@ function ArchivedRow({
       {!selectionMode && (
         <div className="flex shrink-0 items-center gap-1 transition-opacity md:opacity-0 md:group-hover:opacity-100 md:group-focus-within:opacity-100">
           <Button
+            data-settings-row-action="delete"
             type="button"
             variant="ghost"
             size="icon-sm"
@@ -3479,6 +3814,7 @@ function ArchivedRow({
             <Trash2Icon className="size-4 text-destructive" />
           </Button>
           <Button
+            data-settings-row-action="unarchive"
             type="button"
             variant="ghost"
             size="sm"
@@ -3502,7 +3838,7 @@ function ArchivedRow({
       )}
 
       <Dialog open={deleteOpen} onOpenChange={setDeleteOpen}>
-        <DialogContent>
+        <DialogContent {...settingsRowOverlayProps(ARCHIVED_SESSIONS_ENTRY, "sessions", "delete")}>
           <DialogHeader>
             <DialogTitle>Delete session?</DialogTitle>
             <DialogDescription>
@@ -3511,10 +3847,16 @@ function ArchivedRow({
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
-            <Button variant="ghost" onClick={() => setDeleteOpen(false)} disabled={del.isPending}>
+            <Button
+              data-settings-row-action="cancel"
+              variant="ghost"
+              onClick={() => setDeleteOpen(false)}
+              disabled={del.isPending}
+            >
               Cancel
             </Button>
             <Button
+              data-settings-row-action="delete"
               variant="destructive"
               disabled={del.isPending}
               onClick={() => {

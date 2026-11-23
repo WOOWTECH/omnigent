@@ -25,9 +25,11 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[1]
 RECEIPT = "WOOW_BUILD_RECEIPT.json"
 MANIFEST = "WOOW_CONTENT_MANIFEST.json"
-WHEEL = "omnigent-0.21.0-py3-none-any.whl"
+CORE_VERSION = "0.23.0"
+WHEEL = f"omnigent-{CORE_VERSION}-py3-none-any.whl"
 UI = "omnigent/server/static/web-ui/"
-MIGRATION = "za3b4c5d6e7f"
+# Alembic head：MCP profiles（za3b4c5d6e7f）與上游 v0.23.0 head 的 merge revision。
+MIGRATION = "zb4c5d6e7f80"
 BUILD_PYTHON = "3.12.14"
 NODE_VERSION = "v22.23.3"
 PNPM_VERSION = "11.15.1"
@@ -42,6 +44,9 @@ MARKERS = {
     "omnigent/db/migrations/versions/za3b4c5d6e7f_add_mcp_server_profiles.py": [
         b"d0a1f879a01d",
     ],
+    "omnigent/db/migrations/versions/zb4c5d6e7f80_merge_mcp_profiles_and_v0230_head.py": [
+        b'("ffeec66eadb5", "za3b4c5d6e7f")',
+    ],
     "omnigent/server/routes/accounts_auth.py": [b"verify_account_password"],
     "omnigent/server/routes/_sessions/orchestration.py": [
         b'result["isError"] = True',
@@ -51,7 +56,7 @@ MARKERS = {
         b'env_var_is_truthy("OMNIGENT_PUBLIC_API_DOCS", default=False)',
         b"OMNIGENT_PUBLIC_HSTS",
     ],
-    "omnigent/server/routes/_gzip_route.py": [b"_skip_compression"],
+    "omnigent/server/routes/_gzip_route.py": [b"self._skip = True"],
     "omnigent/server/routes/hosts.py": [b'@router.delete("/hosts/{host_id}")'],
     "omnigent/stores/host_store.py": [b"require_offline"],
 }
@@ -109,8 +114,11 @@ def validate_payload(payload: dict[str, bytes]) -> None:
         is not None,
         "Missing OpenCode model picker UI",
     )
-    metadata = payload.get("omnigent-0.21.0.dist-info/METADATA", b"")
-    require(b"\nVersion: 0.21.0\n" in metadata, "Core package version must remain 0.21.0")
+    metadata = payload.get(f"omnigent-{CORE_VERSION}.dist-info/METADATA", b"")
+    require(
+        f"\nVersion: {CORE_VERSION}\n".encode() in metadata,
+        f"Core package version must remain {CORE_VERSION}",
+    )
 
 
 def normalize_wheel(path: Path, identity: dict) -> dict[str, str]:
@@ -119,7 +127,7 @@ def normalize_wheel(path: Path, identity: dict) -> dict[str, str]:
         executable = {
             item.filename for item in archive.infolist() if item.external_attr >> 16 & 0o111
         }
-    record = "omnigent-0.21.0.dist-info/RECORD"
+    record = f"omnigent-{CORE_VERSION}.dist-info/RECORD"
     payload.pop(record, None)
     epoch = identity["sourceDateEpoch"]
     payload["omnigent/_build_info.py"] = (
@@ -207,7 +215,7 @@ def build(args: argparse.Namespace) -> None:
         identity = {
             "schemaVersion": 1,
             "buildId": args.build_id,
-            "coreVersion": "0.21.0",
+            "coreVersion": CORE_VERSION,
             "sourceCommit": None if args.snapshot else commit,
             "sourceBaseCommit": commit,
             "sourceTreeSha256": sha256(canonical(inputs)),
@@ -361,7 +369,7 @@ def verify_debian_security(variant: str) -> None:
 
 def runtime(args: argparse.Namespace) -> None:
     receipt, manifest = verify(args.artifact, args.source_commit)
-    require(importlib.metadata.version("omnigent") == "0.21.0", "Wrong installed core version")
+    require(importlib.metadata.version("omnigent") == CORE_VERSION, "Wrong installed core version")
     package = importlib.import_module("omnigent")
     root = Path(package.__file__).resolve().parent.parent
     for name, digest in manifest["files"].items():
