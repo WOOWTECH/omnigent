@@ -1259,9 +1259,9 @@ def build_mcp_local_tool_schemas(
 ) -> list[_JsonObject]:
     """Advertise the local tools that MCP dispatch can actually execute.
 
-    Use the same granted surface as :func:`execute_tool`. Native harnesses
-    additionally grant the four OS tools through their relay, even without
-    an ``os_env`` section in the agent spec.
+    Use the same granted surface as :func:`execute_tool`. Since v0.23.0 a
+    native harness is granted no ``sys_os_*`` tools (see
+    :func:`_granted_tool_names`), so none are advertised for it either.
     """
     harness = _effective_harness_name(agent_spec, effective_harness)
     granted = _granted_tool_names(agent_spec, harness)
@@ -1270,8 +1270,6 @@ def build_mcp_local_tool_schemas(
         source_schemas = manager.get_tool_schemas()
     finally:
         manager.shutdown()
-    if is_native_harness(harness):
-        source_schemas.extend(tool_cls.get_schema() for tool_cls in OS_ENV_TOOL_TYPES)
 
     schemas: dict[str, _JsonObject] = {}
     for schema in source_schemas:

@@ -2251,8 +2251,10 @@ async def test_mcp_execute_list_advertises_callable_native_local_tools() -> None
     by_name = {schema["name"]: schema for schema in schemas}
     assert len(by_name) == len(schemas)
     assert "jira__search_issues" in by_name
-    assert "sys_os_read" in by_name
-    assert "path" in by_name["sys_os_read"]["parameters"]["properties"]
+    # v0.23.0 起 native harness 不授予 sys_os_*（_granted_tool_names），目錄也不能列出。
+    assert not any(name.startswith("sys_os_") for name in by_name)
+    assert "browser_go_back" in by_name
+    assert by_name["browser_go_back"]["parameters"]["type"] == "object"
 
 
 @pytest.mark.asyncio

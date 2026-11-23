@@ -578,6 +578,7 @@ _WEB_UI_ROUTE_PREFIXES = frozenset(
         "settings",
         "tasks",
         "usage",
+        "workflows",
     }
 )
 
