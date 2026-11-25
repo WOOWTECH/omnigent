@@ -101,9 +101,10 @@ def create_mcp_server_profiles_router(
             body.password.get_secret_value(),
         )
         if generation is None:
+            # 被連結帳號的帳密錯誤屬於表單輸入錯誤；回 401 會被前端當成登入過期而導去登入頁
             raise OmnigentError(
                 "Invalid username or password",
-                code=ErrorCode.UNAUTHORIZED,
+                code=ErrorCode.INVALID_INPUT,
             )
 
         token = f"omcp_{secrets.token_urlsafe(32)}"

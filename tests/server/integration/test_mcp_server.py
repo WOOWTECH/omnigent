@@ -69,8 +69,14 @@ async def test_account_profiles_transport_permissions_and_revocation(
         assert invalid.status_code == 422
         assert fake_password not in invalid.text and "private-password-marker" not in invalid.text
         assert invalid.headers["cache-control"] == "no-store"
-        wrong = await admin.post(_PROFILE_API, json={**body, "password": "incorrect"})
-        assert wrong.status_code == 401
+        for rejected_body in (
+            {**body, "password": "incorrect"},
+            {**body, "username": "missing-user"},
+        ):
+            rejected = await admin.post(_PROFILE_API, json=rejected_body)
+            assert rejected.status_code == 400
+            assert rejected.json()["error"]["message"] == "Invalid username or password"
+        assert (await admin.get(_PROFILE_API)).status_code == 200
 
         with monkeypatch.context() as invalid_config:
             invalid_config.setenv("OMNIGENT_MCP_PUBLIC_BASE_URL", "http://unsafe.example.test")
